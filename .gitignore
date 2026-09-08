@@ -4,3 +4,6 @@ dev/test.html
 # иконки приложения — часть сборки, они должны попадать в репозиторий
 !web/icon-*.png
 !docs/icon-*.png
+
+# служебный кэш firebase-tools
+.firebase/
