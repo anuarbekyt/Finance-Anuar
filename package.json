@@ -5,9 +5,11 @@
     "dev": "node dev/build.js",
     "test": "node dev/build.js && node tests/smoke.js",
     "icons": "node dev/make-icons.js",
-    "build": "node dev/build-web.js"
+    "build": "node dev/build-web.js",
+    "deploy": "node dev/build-web.js && firebase deploy --only hosting,firestore:rules"
   },
   "devDependencies": {
+    "firebase-tools": "^15.29.0",
     "playwright": "^1.63.0"
   }
 }
