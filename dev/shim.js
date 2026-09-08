@@ -48,6 +48,8 @@
       limit: function () { return api; },
       onSnapshot: function (cb) { subs.push({ col: col, cb: cb }); notify(col); return function () {}; },
       add: function (o) {
+        // window.__failAdd = "entries" — имитация обрыва связи, чтобы проверить очередь
+        if (window.__failAdd && window.__failAdd === col) return Promise.reject({ code: "offline-sim" });
         var id = "id" + (++seq);
         store[col] = store[col] || {}; store[col][id] = Object.assign({}, o);
         notify(col); return Promise.resolve(docRef(col, id));

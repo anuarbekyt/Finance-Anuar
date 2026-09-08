@@ -7,8 +7,19 @@ const path = require("path");
 const page_url = "file://" + path.join(__dirname, "..", "dev", "test.html");
 const clean = (s) => s.replace(/ | /g, " ").replace(/\n/g, " | ");
 
+// Скачанный playwright-ом Chromium есть не везде; если его нет — берём уже
+// установленный в системе Chrome или Edge, тест от этого не меняется.
+async function launchBrowser() {
+  const variants = [{}, { channel: "chrome" }, { channel: "msedge" }];
+  let last = null;
+  for (const opts of variants) {
+    try { return await chromium.launch(opts); } catch (e) { last = e; }
+  }
+  throw last;
+}
+
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await launchBrowser();
   const page = await browser.newPage({ viewport: { width: 430, height: 950 } });
   const errors = [];
   page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));
@@ -72,11 +83,11 @@ const clean = (s) => s.replace(/ | /g, " ").replace(/\n/g, " | ");
     платежи: clean(await page.locator("#planDueLeft").textContent())
   });
 
-  // сдвиг платежа на следующий месяц
-  const names = await page.locator("#planDueList .plan-name .t").allInnerTexts();
-  const idx = names.indexOf("Yandex Plus");
-  if (idx >= 0) {
-    await page.locator("#planDueList [data-plan-push]").nth(idx).click();
+  // сдвиг платежа на следующий месяц. Кнопка есть не у всех строк (у кредита её нет),
+  // поэтому ищем её внутри нужной строки, а не по номеру в общем списке.
+  const pushRow = page.locator("#planDueList .plan-row", { hasText: "Yandex Plus" });
+  if (await pushRow.locator("[data-plan-push]").count()) {
+    await pushRow.locator("[data-plan-push]").first().click();
     await page.waitForTimeout(350);
     console.log("после сдвига:", await page.locator("#planDueList .plan-name .t").allInnerTexts());
   }
@@ -101,6 +112,141 @@ const clean = (s) => s.replace(/ | /g, " ").replace(/\n/g, " | ");
   await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(250);
   await page.locator("#reportBars .bar-click").first().click(); await page.waitForTimeout(250);
   console.log("записей в статье:", await page.locator("#reportBars .bar-details .row").count());
+
+  // --- проверки на ранее найденные баги ---
+  const check = async (name, fn) => {
+    try {
+      const ok = await fn();
+      console.log((ok ? "ок  " : "БАГ ") + name);
+      if (!ok) errors.push("ПРОВЕРКА НЕ ПРОШЛА: " + name);
+    } catch (e) { errors.push("ПРОВЕРКА УПАЛА (" + name + "): " + e.message); }
+  };
+
+  // у кредита не должно быть кнопки «Сдвинуть →»: она переставляет весь график платежей
+  await check("у кредита нет кнопки «Сдвинуть»", async () => {
+    await page.click('.tab[data-tab="plan"]'); await page.waitForTimeout(250);
+    const rows = page.locator("#planDueList .plan-row");
+    for (let i = 0; i < await rows.count(); i++) {
+      const row = rows.nth(i);
+      if ((await row.innerText()).includes("Кредит Kaspi")) return (await row.locator("[data-plan-push]").count()) === 0;
+    }
+    return false;
+  });
+
+  // перерасход по статье должен быть виден, а не подтягивать план под факт
+  await check("перерасход по статье виден в плане", async () => {
+    await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(150);
+    await page.click("#repAddExpense"); await page.waitForTimeout(150);
+    await page.fill("#fCategoryNew", "Тест перерасхода");
+    await page.fill("#fAmount", "90000");
+    await page.click("#saveEntryBtn"); await page.waitForTimeout(350);
+    await page.click('.tab[data-tab="plan"]'); await page.waitForTimeout(200);
+    const row = page.locator("#planCatList .plan-row", { hasText: "Тест перерасхода" });
+    await row.locator("[data-budget]").click(); await page.waitForTimeout(200);
+    await page.fill("#bdInput", "10000");
+    await page.click("#bdSave"); await page.waitForTimeout(400);
+    const text = clean(await page.locator("#planCatList .plan-row", { hasText: "Тест перерасхода" }).innerText());
+    return text.includes("перерасход 80 000");
+  });
+
+  // ввод существующей статьи вручную не должен плодить дубли
+  await check("дубли статей не создаются", async () => {
+    await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(150);
+    await page.click("#repAddExpense"); await page.waitForTimeout(150);
+    await page.fill("#fCategoryNew", "  продукты ");
+    await page.fill("#fAmount", "1000");
+    await page.click("#saveEntryBtn"); await page.waitForTimeout(400);
+    await page.click('.tab[data-tab="history"]'); await page.waitForTimeout(200);
+    const opts = await page.locator("#fCategory option").allInnerTexts();
+    return opts.filter((o) => o.trim().toLowerCase() === "продукты").length === 1;
+  });
+
+  // итоги по долгам должны учитывать отмеченные месяцы рассрочки
+  await check("рассрочка уменьшает итог по долгам", async () => {
+    await page.click('.tab[data-tab="debts"]'); await page.waitForTimeout(250);
+    const before = clean(await page.locator("#debtOweTotal").textContent());
+    await page.locator("#oweList [data-debt-pay]").first().click(); await page.waitForTimeout(400);
+    const after = clean(await page.locator("#debtOweTotal").textContent());
+    return before !== after;
+  });
+
+  // статья должна угадываться по словам фразы, без слова «статья»
+  await check("статья угадывается по фразе", async () => {
+    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await page.fill("#quickInput", "такси 1500");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(250);
+    const val = await page.locator("#fCategorySel").inputValue();
+    await page.keyboard.press("Escape"); await page.waitForTimeout(250);
+    return val === "Транспорт";
+  });
+
+  // одна фраза с несколькими суммами должна разложиться на несколько записей
+  await check("несколько записей одной фразой", async () => {
+    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await page.fill("#quickInput", "такси 1500, обед 3000 и сигареты 1200");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(250);
+    const rows = await page.locator(".batch-row").count();
+    if (rows !== 3) { await page.keyboard.press("Escape"); await page.waitForTimeout(200); return false; }
+    const before = await page.locator("#recentList .row").count();
+    await page.click("#batchSave"); await page.waitForTimeout(500);
+    return (await page.locator("#recentList .row").count()) === before + 3;
+  });
+
+  // а фраза с датой возврата — по-прежнему одна запись, не две
+  await check("«до 10 сентября» не дробит фразу", async () => {
+    await page.fill("#quickInput", "долг Бердияру 10 000тг он мне должен до 10 сентября");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(250);
+    const batch = await page.locator(".batch-row").count();
+    const person = await page.locator("#fPerson").inputValue();
+    await page.keyboard.press("Escape"); await page.waitForTimeout(250);
+    return batch === 0 && person === "Бердияру";
+  });
+
+  // «повторить» кладёт копию записи сегодняшним днём.
+  // Считаем по карточке «Сегодня»: «Последние записи» обрезаны восемью строками.
+  await check("кнопка «повторить» дублирует запись", async () => {
+    const before = await page.locator("#todayList .row").count();
+    await page.locator("#todayList [data-repeat]").first().click(); await page.waitForTimeout(450);
+    return (await page.locator("#todayList .row").count()) === before + 1;
+  });
+
+  // фильтр по месяцу и итоги в «Все записи»
+  await check("фильтр по месяцу и итог в «Все записи»", async () => {
+    await page.click('.tab[data-tab="history"]'); await page.waitForTimeout(250);
+    const months = await page.locator("#fPeriod option").count();
+    const sum = clean(await page.locator("#histSum").innerText());
+    return months >= 2 && /записе?[йи]|запись/.test(sum) && sum.includes("Расходы");
+  });
+
+  // просроченный платёж должен отмечаться бейджем на вкладке
+  await check("бейдж просрочки на вкладке «Платежи»", async () => {
+    return await page.locator("#badgeRecurring.on").count() === 1;
+  });
+
+  // переключатель темы должен ходить по кругу авто → светлая → тёмная
+  await check("переключатель темы работает", async () => {
+    const seen = [];
+    for (let i = 0; i < 3; i++) {
+      await page.click("#themeBtn"); await page.waitForTimeout(120);
+      seen.push(String(await page.evaluate(() => document.documentElement.getAttribute("data-theme"))));
+    }
+    return seen.join(",") === "light,dark,null";
+  });
+
+  // запись, не ушедшая в облако, должна лечь в очередь и уйти при восстановлении связи
+  await check("очередь досылает записи после обрыва связи", async () => {
+    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await page.evaluate(() => { window.__failAdd = "entries"; });
+    await page.fill("#quickInput", "такси 700");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(200);
+    await page.click("#saveEntryBtn"); await page.waitForTimeout(400);
+    const queued = clean(await page.locator("#queueChipText").textContent());
+    if (!queued.includes("1")) return false;
+    await page.evaluate(() => { window.__failAdd = null; });
+    await page.click("#queueSendBtn"); await page.waitForTimeout(600);
+    return clean(await page.locator("#queueChipText").textContent()).includes("0")
+      && await page.locator("#queueChip").isHidden();
+  });
 
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");
   await browser.close();
