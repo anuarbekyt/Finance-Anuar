@@ -148,11 +148,6 @@
     font-family: var(--font-display); font-weight:700; font-size:19px;
     letter-spacing:-0.03em; line-height:1;
   }
-  .brand .tagline{
-    font-size:10.5px; color:var(--ink-mute); text-transform:uppercase;
-    letter-spacing:.14em; font-weight:600; padding-left:9px; margin-left:2px;
-    border-left:1px solid var(--line);
-  }
   .header-controls{ display:flex; align-items:center; gap:6px; flex:0 0 auto; }
   .chip-btn{
     display:flex; align-items:center; gap:6px;
@@ -559,7 +554,6 @@
 
   @media (max-width:480px){
     .field-grid{ grid-template-columns:1fr; }
-    .brand .tagline{ display:none; }
   }
   /* на узком экране название платежа не должно обрезаться ради кнопки */
   @media (max-width:440px){
@@ -644,7 +638,6 @@
     <div class="brand">
       <span class="lamp" id="cloudDot" title="Состояние облачного хранилища">₸</span>
       <span class="mark">Финансы</span>
-      <span class="tagline">A Catering</span>
     </div>
     <div class="header-controls">
       <span class="chip-btn" id="cloudChip" title="Состояние облачного хранилища">
