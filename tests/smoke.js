@@ -24,6 +24,23 @@ async function launchBrowser() {
   const errors = [];
   page.on("pageerror", (e) => errors.push("PAGEERROR: " + e.message));
 
+
+  // Вкладки на узком экране живут в нижней панели, а «Долги», «Цели», «Отчёты»
+  // и «Все записи» — под кнопкой «Ещё». Тест ходит по разделам через этот помощник,
+  // чтобы не зависеть от того, какая навигация видна при текущей ширине.
+  const go = async (tab, wait = 250) => {
+    const top = page.locator('#tabbar .tab[data-tab="' + tab + '"]');
+    const bottom = page.locator('#bottomNav [data-tab="' + tab + '"]');
+    if (await top.isVisible()) await top.click();
+    else if ((await bottom.count()) && (await bottom.isVisible())) await bottom.click();
+    else {
+      await page.click("#navMore");
+      await page.waitForTimeout(220);
+      await page.click('.more-item[data-goto="' + tab + '"]');
+    }
+    await page.waitForTimeout(wait);
+  };
+
   await page.goto(page_url);
   await page.waitForTimeout(400);
 
@@ -34,7 +51,7 @@ async function launchBrowser() {
 
   // --- регулярные платежи и доходы ---
   const addRec = async (kind, name, amount, day, extra = {}) => {
-    await page.click('.tab[data-tab="recurring"]'); await page.waitForTimeout(120);
+    await go("recurring", 120);
     await page.click(`[data-addrec="${kind}"]`); await page.waitForTimeout(150);
     await page.fill("#rName", name);
     await page.fill("#rAmount", String(amount));
@@ -51,7 +68,7 @@ async function launchBrowser() {
 
   // --- расходы ---
   const addExpense = async (cat, amount) => {
-    await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(120);
+    await go("reports", 120);
     await page.click("#repAddExpense"); await page.waitForTimeout(150);
     await page.selectOption("#fCategorySel", cat);
     await page.fill("#fAmount", String(amount));
@@ -61,16 +78,16 @@ async function launchBrowser() {
   await addExpense("Транспорт", 12000);
 
   // --- разбор диктовки ---
-  await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+  await go("dashboard", 150);
   await page.fill("#quickInput", "я должен Ануару 240000");
   await page.click("#quickParseBtn"); await page.waitForTimeout(200);
   await page.fill("#fTerm", "6");
   await page.click("#saveEntryBtn"); await page.waitForTimeout(250);
-  await page.click('.tab[data-tab="debts"]'); await page.waitForTimeout(200);
+  await go("debts", 200);
   console.log("долги:", clean(await page.locator("#oweList").innerText()).slice(0, 200));
 
   // --- план месяца ---
-  await page.click('.tab[data-tab="plan"]'); await page.waitForTimeout(250);
+  await go("plan", 250);
   await page.click("#planOpeningBtn"); await page.waitForTimeout(150);
   await page.fill("#obInput", "250000");
   await page.click("#obSave"); await page.waitForTimeout(300);
@@ -93,7 +110,7 @@ async function launchBrowser() {
   }
 
   // --- цель ---
-  await page.click('.tab[data-tab="goals"]'); await page.waitForTimeout(150);
+  await go("goals", 150);
   await page.click("#addGoalBtn"); await page.waitForTimeout(150);
   await page.fill("#gName", "Оборудование");
   await page.fill("#gTarget", "1200000");
@@ -103,13 +120,13 @@ async function launchBrowser() {
   console.log("цели:", clean(await page.locator("#goalsList").innerText()).slice(0, 220));
 
   // --- календарь ---
-  await page.click('.tab[data-tab="calendar"]'); await page.waitForTimeout(250);
+  await go("calendar", 250);
   console.log("календарь:", await page.locator("#calTitle").textContent(),
     "|", clean(await page.locator("#calSummary").textContent()),
     "| дней:", await page.locator("#calGrid .cal-cell:not(.blank)").count());
 
   // --- отчёты: раскрыть статью и отредактировать запись ---
-  await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(250);
+  await go("reports", 250);
   await page.locator("#reportBars .bar-click").first().click(); await page.waitForTimeout(250);
   console.log("записей в статье:", await page.locator("#reportBars .bar-details .row").count());
 
@@ -124,7 +141,7 @@ async function launchBrowser() {
 
   // у кредита не должно быть кнопки «Сдвинуть →»: она переставляет весь график платежей
   await check("у кредита нет кнопки «Сдвинуть»", async () => {
-    await page.click('.tab[data-tab="plan"]'); await page.waitForTimeout(250);
+    await go("plan", 250);
     const rows = page.locator("#planDueList .plan-row");
     for (let i = 0; i < await rows.count(); i++) {
       const row = rows.nth(i);
@@ -135,12 +152,12 @@ async function launchBrowser() {
 
   // перерасход по статье должен быть виден, а не подтягивать план под факт
   await check("перерасход по статье виден в плане", async () => {
-    await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(150);
+    await go("reports", 150);
     await page.click("#repAddExpense"); await page.waitForTimeout(150);
     await page.fill("#fCategoryNew", "Тест перерасхода");
     await page.fill("#fAmount", "90000");
     await page.click("#saveEntryBtn"); await page.waitForTimeout(350);
-    await page.click('.tab[data-tab="plan"]'); await page.waitForTimeout(200);
+    await go("plan", 200);
     const row = page.locator("#planCatList .plan-row", { hasText: "Тест перерасхода" });
     await row.locator("[data-budget]").click(); await page.waitForTimeout(200);
     await page.fill("#bdInput", "10000");
@@ -151,19 +168,19 @@ async function launchBrowser() {
 
   // ввод существующей статьи вручную не должен плодить дубли
   await check("дубли статей не создаются", async () => {
-    await page.click('.tab[data-tab="reports"]'); await page.waitForTimeout(150);
+    await go("reports", 150);
     await page.click("#repAddExpense"); await page.waitForTimeout(150);
     await page.fill("#fCategoryNew", "  продукты ");
     await page.fill("#fAmount", "1000");
     await page.click("#saveEntryBtn"); await page.waitForTimeout(400);
-    await page.click('.tab[data-tab="history"]'); await page.waitForTimeout(200);
+    await go("history", 200);
     const opts = await page.locator("#fCategory option").allInnerTexts();
     return opts.filter((o) => o.trim().toLowerCase() === "продукты").length === 1;
   });
 
   // итоги по долгам должны учитывать отмеченные месяцы рассрочки
   await check("рассрочка уменьшает итог по долгам", async () => {
-    await page.click('.tab[data-tab="debts"]'); await page.waitForTimeout(250);
+    await go("debts", 250);
     const before = clean(await page.locator("#debtOweTotal").textContent());
     await page.locator("#oweList [data-debt-pay]").first().click(); await page.waitForTimeout(400);
     const after = clean(await page.locator("#debtOweTotal").textContent());
@@ -172,7 +189,7 @@ async function launchBrowser() {
 
   // статья должна угадываться по словам фразы, без слова «статья»
   await check("статья угадывается по фразе", async () => {
-    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await go("dashboard", 150);
     await page.fill("#quickInput", "такси 1500");
     await page.click("#quickParseBtn"); await page.waitForTimeout(250);
     const val = await page.locator("#fCategorySel").inputValue();
@@ -182,7 +199,7 @@ async function launchBrowser() {
 
   // одна фраза с несколькими суммами должна разложиться на несколько записей
   await check("несколько записей одной фразой", async () => {
-    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await go("dashboard", 150);
     await page.fill("#quickInput", "такси 1500, обед 3000 и сигареты 1200");
     await page.click("#quickParseBtn"); await page.waitForTimeout(250);
     const rows = await page.locator(".batch-row").count();
@@ -212,7 +229,7 @@ async function launchBrowser() {
 
   // фильтр по месяцу и итоги в «Все записи»
   await check("фильтр по месяцу и итог в «Все записи»", async () => {
-    await page.click('.tab[data-tab="history"]'); await page.waitForTimeout(250);
+    await go("history", 250);
     const months = await page.locator("#fPeriod option").count();
     const sum = clean(await page.locator("#histSum").innerText());
     return months >= 2 && /записе?[йи]|запись/.test(sum) && sum.includes("Расходы");
@@ -223,19 +240,19 @@ async function launchBrowser() {
     return await page.locator("#badgeRecurring.on").count() === 1;
   });
 
-  // переключатель темы должен ходить по кругу авто → светлая → тёмная
+  // переключатель темы должен ходить по кругу тёмная → светлая → как в системе
   await check("переключатель темы работает", async () => {
     const seen = [];
     for (let i = 0; i < 3; i++) {
       await page.click("#themeBtn"); await page.waitForTimeout(120);
       seen.push(String(await page.evaluate(() => document.documentElement.getAttribute("data-theme"))));
     }
-    return seen.join(",") === "light,dark,null";
+    return seen.join(",") === "light,null,dark";
   });
 
   // запись, не ушедшая в облако, должна лечь в очередь и уйти при восстановлении связи
   await check("очередь досылает записи после обрыва связи", async () => {
-    await page.click('.tab[data-tab="dashboard"]'); await page.waitForTimeout(150);
+    await go("dashboard", 150);
     await page.evaluate(() => { window.__failAdd = "entries"; });
     await page.fill("#quickInput", "такси 700");
     await page.click("#quickParseBtn"); await page.waitForTimeout(200);
