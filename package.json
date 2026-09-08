@@ -1,4 +1,12 @@
 {
+  "name": "finance",
+  "private": true,
+  "scripts": {
+    "dev": "node dev/build.js",
+    "test": "node dev/build.js && node tests/smoke.js",
+    "icons": "node dev/make-icons.js",
+    "build": "node dev/build-web.js"
+  },
   "devDependencies": {
     "playwright": "^1.63.0"
   }
