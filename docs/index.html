@@ -13,7 +13,7 @@
 <style>body{margin:0;padding:0}img{max-width:100%}[hidden]:not([hidden=until-found]){display:none!important}</style>
 </head>
 <body>
-<script src="./config.js?v=202609081514"></script>
+<script src="./config.js?v=202609081554"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore-compat.js"></script>
@@ -444,12 +444,21 @@
   .btn-ghost:hover{ border-color: var(--accent); color:var(--accent); }
   .btn-danger{ background: var(--bad-soft); color: var(--bad); }
   .btn-sm{ padding:7px 11px; font-size:12.5px; border-radius:9px; }
-  .examples{ display:flex; gap:6px; flex-wrap:wrap; margin-top:11px; }
-  .example-chip{
-    font-size:12px; color:var(--ink-soft); background:transparent; border:1px dashed var(--line);
-    border-radius:999px; padding:5px 10px; cursor:pointer;
+  /* ---------- выбор периода табло ---------- */
+  .dash-controls{
+    display:flex; align-items:center; justify-content:space-between; gap:8px;
+    flex-wrap:wrap; margin-top:14px;
   }
-  .example-chip:hover{ border-color:var(--accent); color:var(--accent); }
+  /* кнопка настройки прижата вправо и когда чипы перенесли её на свою строку */
+  .dash-controls .btn{ margin-left:auto; }
+  .range-chips{ display:flex; gap:6px; flex-wrap:wrap; }
+  .range-chip{
+    font-size:12px; font-weight:600; padding:6px 11px; border-radius:999px; cursor:pointer;
+    border:1px solid var(--line); background:var(--well); color:var(--ink-soft);
+  }
+  .range-chip:hover{ border-color:var(--accent); color:var(--accent); }
+  .range-chip.on{ background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+  .range-note{ font-size:11.5px; color:var(--ink-mute); font-family:var(--font-num); }
 
   /* ---------- табло: плитки как один прибор, а не россыпь карточек ---------- */
   /* Разделители рисует не фон контейнера, а обводка каждой плитки: при нечётном
@@ -475,6 +484,10 @@
   .tile.good .tl-value{ color:var(--good); }
   .tile.bad{ box-shadow: 0 0 0 1px var(--line), inset 2px 0 0 var(--bad); }
   .tile.bad .tl-value{ color:var(--bad); }
+  #dashTiles{ margin-top:10px; }
+  .tile-cfg .row-title.off{ color:var(--ink-mute); }
+  .tile-cfg .cfg-move{ display:flex; gap:3px; flex:0 0 auto; }
+  .tile-cfg .pill{ cursor:pointer; }
 
   /* ---------- списки ---------- */
   .row{
@@ -849,15 +862,6 @@
         <button class="btn btn-ghost" id="quickMicBtn" type="button" title="Голосовой ввод">🎤</button>
         <button class="btn btn-primary" id="quickParseBtn">Разобрать</button>
       </div>
-      <div class="examples">
-        <span class="example-chip" data-ex="Запиши долг Бердияру 10 000тг он мне должен до 10 сентября">долг Бердияру 10 000тг, до 10 сентября</span>
-        <span class="example-chip" data-ex="Айдар должен мне 5000">Айдар должен мне 5000</span>
-        <span class="example-chip" data-ex="я должен Ануару 20000">я должен Ануару 20000</span>
-        <span class="example-chip" data-ex="Статья сигареты 1270тг">сигареты 1270тг</span>
-        <span class="example-chip" data-ex="статья развлечение, 12500 - заведение Паб">развлечение 12500 — Паб</span>
-        <span class="example-chip" data-ex="Доход 150000 заказ кейтеринга">доход 150000 заказ кейтеринга</span>
-      </div>
-
       <div class="qb-wrap">
         <div class="qb-head">
           <span class="qb-title">В один клик</span>
@@ -867,71 +871,16 @@
       </div>
     </div>
 
-    <div class="tiles">
-      <div class="tile good">
-        <div class="tl-label">Доходы за месяц</div>
-        <div class="tl-value mono" id="tileIncome">0 ₸</div>
-        <div class="tl-sub" id="tileIncomeSub">—</div>
-      </div>
-      <div class="tile">
-        <div class="tl-label">Расходы за месяц</div>
-        <div class="tl-value mono" id="tileExpense">0 ₸</div>
-        <div class="tl-sub" id="tileExpenseSub">—</div>
-      </div>
-      <div class="tile" id="tileBalanceCard">
-        <div class="tl-label">Баланс за месяц</div>
-        <div class="tl-value mono" id="tileBalance">0 ₸</div>
-        <div class="tl-sub" id="tileBalanceSub">доходы − расходы − платежи</div>
-      </div>
-      <div class="tile" id="tileDailyCard">
-        <div class="tl-label">Можно тратить сегодня</div>
-        <div class="tl-value mono" id="tileDaily">0 ₸</div>
-        <div class="tl-sub" id="tileDailySub">—</div>
-      </div>
-      <div class="tile" id="tileTodayCard">
-        <div class="tl-label">Потрачено сегодня</div>
-        <div class="tl-value mono" id="tileToday">0 ₸</div>
-        <div class="tl-sub" id="tileTodaySub">—</div>
-      </div>
-      <div class="tile good">
-        <div class="tl-label">Мне должны</div>
-        <div class="tl-value mono" id="tileLend">0 ₸</div>
-        <div class="tl-sub" id="tileLendSub">—</div>
-      </div>
-      <div class="tile bad">
-        <div class="tl-label">Я должен</div>
-        <div class="tl-value mono" id="tileOwe">0 ₸</div>
-        <div class="tl-sub" id="tileOweSub">—</div>
-      </div>
-      <div class="tile">
-        <div class="tl-label">Цели накоплений</div>
-        <div class="tl-value mono" id="tileGoals">0%</div>
-        <div class="tl-sub" id="tileGoalsSub">—</div>
-      </div>
-      <div class="tile">
-        <div class="tl-label">Подписки в месяц</div>
-        <div class="tl-value mono" id="tileSubs">0 ₸</div>
-        <div class="tl-sub" id="tileSubsSub">—</div>
-      </div>
-      <div class="tile good">
-        <div class="tl-label">Постоянные доходы</div>
-        <div class="tl-value mono" id="tileFixedIncome">0 ₸</div>
-        <div class="tl-sub" id="tileFixedIncomeSub">план в месяц</div>
-      </div>
-      <div class="tile bad">
-        <div class="tl-label">Остаток по кредитам</div>
-        <div class="tl-value mono" id="tileCredit">0 ₸</div>
-        <div class="tl-sub" id="tileCreditSub">—</div>
-      </div>
-      <div class="tile">
-        <div class="tl-label">Откладывать в месяц</div>
-        <div class="tl-value mono" id="tileSave">0 ₸</div>
-        <div class="tl-sub" id="tileSaveSub">по всем целям со сроком</div>
-      </div>
+    <!-- Плитки и их порядок настраиваются (TILE_DEFS + tilesCfg), поэтому здесь
+         только контейнер: разметку рисует renderTiles. -->
+    <div class="dash-controls">
+      <div class="range-chips" id="dashRange"></div>
+      <button class="btn btn-ghost btn-sm" id="tilesCfgBtn">Плитки</button>
     </div>
+    <div class="tiles" id="dashTiles"></div>
 
     <div class="card">
-      <div class="card-title"><span>Сегодня</span><span class="mono" id="todayTotal" style="font-size:13px; color:var(--ink-mute)"></span></div>
+      <div class="card-title"><span id="todayCardTitle">Сегодня</span><span class="mono" id="todayTotal" style="font-size:13px; color:var(--ink-mute)"></span></div>
       <div id="todayList"><div class="empty-hint">Сегодня записей пока нет</div></div>
     </div>
 
@@ -1198,12 +1147,18 @@ var state = {
   quickButtons: [],
   debtPayments: [],
   monthPlans: [],
+  uiSettings: [],
   entriesTruncated: false,
   me: ""
 };
 var db = null;
 var currentTab = "dashboard";
 var qbEditMode = false;
+// Период табло на Главной. В localStorage не кладём (там только имя, тема и очередь) —
+// после перезагрузки возвращается месяц, как и у календаря с отчётами.
+var dashRange = { mode:"month", from:"", to:"" };
+// Настройка плиток, пока снимок базы ещё не пришёл (или базы вообще нет).
+var pendingTiles = null;
 var calPeriod = "";      // YYYY-MM показанного месяца календаря
 var calSelectedDay = ""; // YYYY-MM-DD выбранного дня
 var reportOpen = {};     // какие статьи в отчёте раскрыты
@@ -1277,6 +1232,68 @@ function escapeHtml(s){
 function debounce(fn, ms){
   var t=null;
   return function(){ clearTimeout(t); var a=arguments; t=setTimeout(function(){ fn.apply(null,a); }, ms); };
+}
+/* ---- периоды табло на Главной ----
+   Любой период сводится к паре дат «от — до» плюс список месяцев, которые он задевает:
+   факт (записи и отметки платежей) считается по датам, а всё плановое — помесячно,
+   потому что планы, бюджеты и регулярные платежи живут месяцами. */
+var RANGE_MODES = [
+  ["today", "Сегодня"],
+  ["week", "Неделя"],
+  ["month", "Месяц"],
+  ["quarter", "Квартал"],
+  ["year", "Год"],
+  ["custom", "Свой период"]
+];
+function dStr(d){ return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate()); }
+// месяцы «YYYY-MM», которые задевает диапазон дат
+function monthsInRange(from, to){
+  var out = [], p = periodOf(from), last = periodOf(to);
+  while(p <= last){ out.push(p); p = addMonths(p, 1); }
+  return out;
+}
+function rangeOf(r){
+  var now = new Date();
+  var from, to, label;
+  var mode = (r && r.mode) || "month";
+  if(mode==="today"){
+    from = to = todayStr();
+    label = "Сегодня";
+  } else if(mode==="week"){
+    var wd = (now.getDay()+6)%7;                       // понедельник — начало недели
+    from = addDays(todayStr(), -wd);
+    to = addDays(from, 6);
+    label = "Неделя";
+  } else if(mode==="quarter"){
+    var q = Math.floor(now.getMonth()/3);
+    from = now.getFullYear()+"-"+pad(q*3+1)+"-01";
+    var qEnd = periodOf(from); qEnd = addMonths(qEnd, 2);
+    to = qEnd+"-"+pad(daysInPeriod(qEnd));
+    label = ["I","II","III","IV"][q]+" квартал "+now.getFullYear();
+  } else if(mode==="year"){
+    from = now.getFullYear()+"-01-01";
+    to = now.getFullYear()+"-12-31";
+    label = now.getFullYear()+" год";
+  } else if(mode==="custom" && r && r.from && r.to){
+    from = r.from < r.to ? r.from : r.to;
+    to = r.from < r.to ? r.to : r.from;
+    label = dateLabel(from)+" — "+dateLabel(to);
+  } else {
+    mode = "month";
+    var p = currentPeriod();
+    from = p+"-01";
+    to = p+"-"+pad(daysInPeriod(p));
+    label = capitalize(monthLabel(p));
+  }
+  var months = monthsInRange(from, to);
+  return { mode:mode, from:from, to:to, label:label, months:months,
+           datesLabel: dateLabel(from) + (from===to ? "" : " — " + dateLabel(to)) };
+}
+// «сентябрь 2026» или «сентябрь 2026 — ноябрь 2026» — чей план показан в плитке
+function monthsLabel(months){
+  if(!months.length) return "";
+  return months.length===1 ? monthLabel(months[0])
+                           : (monthLabel(months[0])+" — "+monthLabel(months[months.length-1]));
 }
 // сколько дней в месяце «YYYY-MM»
 function daysInPeriod(period){
@@ -1634,6 +1651,14 @@ function subscribeAll(){
     state.monthPlans = docsOf(snap);
     renderAll();
   }, dbError("план месяца"));
+
+  // настройки вида (пока только набор и порядок плиток) — в облаке, чтобы телефон
+  // и ноутбук показывали табло одинаково
+  db.collection("uiSettings").limit(20).onSnapshot(function(snap){
+    state.uiSettings = docsOf(snap);
+    pendingTiles = null;
+    renderAll();
+  }, dbError("настройки вида"));
 
   var seeded = false;
   db.collection("categories").orderBy("name").onSnapshot(function(snap){
@@ -2425,12 +2450,16 @@ document.getElementById("quickParseBtn").addEventListener("click", runQuickParse
 document.getElementById("quickInput").addEventListener("keydown", function(e){
   if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); runQuickParse(); }
 });
-document.querySelectorAll(".example-chip").forEach(function(c){
-  c.addEventListener("click", function(){
-    document.getElementById("quickInput").value = c.getAttribute("data-ex");
-    document.getElementById("quickInput").focus();
-  });
+// период табло и настройка плиток
+document.getElementById("dashRange").addEventListener("click", function(e){
+  var b = e.target.closest("[data-range]");
+  if(!b) return;
+  var mode = b.getAttribute("data-range");
+  if(mode==="custom"){ openCustomRangeModal(); return; }
+  dashRange = { mode:mode, from:"", to:"" };
+  renderDashboard();
 });
+document.getElementById("tilesCfgBtn").addEventListener("click", openTilesCfgModal);
 
 // голосовой ввод — доступен только в Chrome/Edge/Android WebView, поэтому фича
 // проверяется и при отсутствии API кнопка просто прячется
@@ -2847,6 +2876,36 @@ function catBudget(catName){
   var c = findCategory(catName, "expense");
   return c ? Number(c.budget||0) : 0;
 }
+/* ---- сколько нужно откладывать в месяц по всем целям со сроком ---- */
+function savePerMonthAll(){
+  return state.goals.reduce(function(s,g){ return s + goalPlan(g).perMonth; }, 0);
+}
+/* ---- мои долги, которые надо вернуть в этом месяце ----
+   Долг с рассрочкой даёт свою месячную долю, долг без рассрочки — весь остаток
+   в месяце срока возврата. Просроченное переносится в текущий месяц: платить его
+   всё равно надо сейчас, а не в прошлом. Считать долги в плане иначе нельзя —
+   иначе весь остаток по долгам садился бы в каждый месяц подряд. */
+function debtDueIn(period){
+  var sum = 0;
+  state.entries.forEach(function(e){
+    if(e.type!=="owe") return;
+    var open = debtOpenAmount(e);
+    if(open<=0) return;
+    var term = parseInt(e.termMonths,10) || 0;
+    if(term >= 2){
+      if(debtPeriods(e).indexOf(period) < 0) return;
+      var d = state.debtPayments.find(function(x){ return x.id===e.id+"__"+period; });
+      if(d && d.paid) return;
+      sum += Number(e.amount||0)/term;
+      return;
+    }
+    if(!e.dueDate) return;                 // без срока возврата план не двигаем
+    var due = periodOf(e.dueDate);
+    if(due===period) sum += open;
+    else if(due < period && period===currentPeriod()) sum += open;
+  });
+  return sum;
+}
 /* ---- сводка плана месяца ---- */
 function monthPlanSummary(period){
   var recur = state.recurring.filter(function(r){ return recActiveIn(r, period); });
@@ -2892,6 +2951,14 @@ function monthPlanSummary(period){
   var factPlanned = cats.filter(function(c){ return c.plan>0; }).reduce(function(s,c){ return s+c.fact; },0);
   var opening = openingBalance(period);
 
+  // Откладывание и долги — такой же плановый расход, как платежи и статьи.
+  // По целям берём худшее из плана и уже отложенного, иначе взнос сверх плана
+  // потерялся бы; по долгам — только то, что возвращаем в этом месяце.
+  var planGoal = Math.max(savePerMonthAll(), factGoal);
+  var planDebt = debtDueIn(period);
+  var planExpense = planRecurOut + expectedCats + planGoal + planDebt;
+  var planIncome = planRecurIn + factIncome;
+
   return {
     period: period, opening: opening,
     recurOut: recurOut, recurIn: recurIn,
@@ -2899,10 +2966,11 @@ function monthPlanSummary(period){
     planRecurIn: planRecurIn, gotRecurIn: gotRecurIn,
     factExpense: factExpense, factIncome: factIncome, factGoal: factGoal,
     cats: cats, planCats: planCats, expectedCats: expectedCats, factPlanned: factPlanned,
-    planIncome: planRecurIn + factIncome,
-    planExpense: planRecurOut + expectedCats,
-    now: opening + factIncome + gotRecurIn - factExpense - paidRecurOut,
-    left: opening + planRecurIn + factIncome - planRecurOut - expectedCats
+    planGoal: planGoal, planDebt: planDebt,
+    planIncome: planIncome,
+    planExpense: planExpense,
+    now: opening + factIncome + gotRecurIn - factExpense - paidRecurOut - factGoal,
+    left: opening + planIncome - planExpense
   };
 }
 
@@ -3103,140 +3171,355 @@ function wireRows(container){
 function currentYearStr(){ return String(new Date().getFullYear()); }
 function subMonthlyEquivalent(r){ return (r.cycle==="yearly") ? (Number(r.amount||0)/12) : Number(r.amount||0); }
 
-function renderDashboard(){
-  var period = currentPeriod();
-  var monthExpenses = state.entries.filter(function(e){ return e.type==="expense" && periodOf(e.date)===period; });
-  var totalExpense = monthExpenses.reduce(function(s,e){ return s+Number(e.amount||0); },0);
-  document.getElementById("tileExpense").textContent = fmtMoney(totalExpense);
-  document.getElementById("tileExpenseSub").textContent = capitalize(monthLabel(period));
-
-  var monthIncome = state.entries.filter(function(e){ return e.type==="income" && periodOf(e.date)===period; });
-  var totalIncome = monthIncome.reduce(function(s,e){ return s+Number(e.amount||0); },0);
-  document.getElementById("tileIncome").textContent = fmtMoney(totalIncome);
-  document.getElementById("tileIncomeSub").textContent = capitalize(monthLabel(period));
-
-  var paidOut = 0, paidIn = 0;
-  paidRecurringIn(period).forEach(function(x){
-    if(x.rec.kind==="income") paidIn += x.amount; else paidOut += x.amount;
-  });
-  var balance = totalIncome + paidIn - totalExpense - paidOut;
-  document.getElementById("tileBalance").textContent = fmtMoney(balance);
-  document.getElementById("tileBalanceSub").textContent = "доходы + постоянные − расходы − платежи";
-  document.getElementById("tileBalanceCard").classList.toggle("good", balance>=0);
-  document.getElementById("tileBalanceCard").classList.toggle("bad", balance<0);
-
-  // сколько ещё можно тратить по статьям сегодня — остаток бюджета статей на оставшиеся дни месяца
-  var mp = monthPlanSummary(period);
-  var todayD = new Date();
-  var daysInCurMonth = new Date(todayD.getFullYear(), todayD.getMonth()+1, 0).getDate();
-  var daysLeft = daysInCurMonth - todayD.getDate() + 1;
-  // остаток может уйти в минус — это и есть перерасход, раньше он обрезался нулём
-  var remainingBudget = mp.planCats - mp.factPlanned;
-  var dailyAllowance = null;   // null = бюджеты по статьям не заданы, сравнивать не с чем
-  if(mp.planCats>0){
-    if(remainingBudget < 0){
-      dailyAllowance = 0;
-      document.getElementById("tileDaily").textContent = "0 ₸";
-      document.getElementById("tileDailySub").textContent = "перерасход " + fmtMoney(-remainingBudget) + " — план месяца уже превышен";
-    } else {
-      dailyAllowance = daysLeft>0 ? remainingBudget/daysLeft : remainingBudget;
-      document.getElementById("tileDaily").textContent = fmtMoney(dailyAllowance);
-      document.getElementById("tileDailySub").textContent = "из " + fmtMoney(remainingBudget) + " на " + daysLeft + " " + pluralize(daysLeft,"день","дня","дней");
-    }
-    document.getElementById("tileDailyCard").classList.toggle("bad", remainingBudget<=0);
-  } else {
-    document.getElementById("tileDaily").textContent = "—";
-    document.getElementById("tileDailySub").textContent = "задайте бюджет по статьям — «План месяца»";
-    document.getElementById("tileDailyCard").classList.remove("bad");
+/* ============ ТАБЛО: ПЕРИОД И ПЛИТКИ ============ */
+/* ---- каталог плиток табло ----
+   Плитка описана одной записью: id, заголовок и функция, считающая значение по
+   готовой сводке dashStats. Набор и порядок настраиваются (uiSettings/dashTiles),
+   поэтому разметку рисует renderTiles, а не HTML. Новая плитка добавляется сюда
+   и сама появляется в конце табло и в списке настройки. */
+// из чего сложилась сумма: нулевые слагаемые не показываем — на телефоне
+// подпись «платежи 0 ₸ · статьи 0 ₸ · цели 0 ₸» занимает три строки и ничего не говорит
+function sumParts(pairs, sep, fallback){
+  var out = pairs.filter(function(p){ return Math.round(p[1]) !== 0; })
+                 .map(function(p){ return p[0] + " " + fmtMoney(p[1]); });
+  return out.length ? out.join(sep) : fallback;
+}
+var TILE_DEFS = [
+  { id:"income", label:"Доходы за период", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.income),
+               sub: sumParts([["разовые", s.factIncome], ["постоянные", s.paidIn]], " · ", s.range.datesLabel) };
+    }},
+  { id:"expense", label:"Расходы за период", calc:function(s){
+      return { value: fmtMoney(s.expense),
+               sub: sumParts([["разовые", s.factExpense], ["платежи", s.paidOut], ["цели", s.factGoal]],
+                             " · ", s.range.datesLabel) };
+    }},
+  { id:"balance", label:"Баланс за период", calc:function(s){
+      return { value: fmtMoney(s.balance), sub: "доходы − расходы",
+               tone: s.balance>=0 ? "good" : "bad" };
+    }},
+  { id:"planIncome", label:"Планируемый доход", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.planIncome),
+               sub: sumParts([["постоянные", s.planRecurIn], ["разовые", s.planFactIncome]],
+                             " + ", "плановых доходов нет") + s.planNote };
+    }},
+  { id:"planExpense", label:"Планируемый расход", tone:"bad", calc:function(s){
+      return { value: fmtMoney(s.planExpense),
+               sub: sumParts([["платежи", s.planRecurOut], ["статьи", s.planCats],
+                              ["цели", s.planGoal], ["долги", s.planDebt]],
+                             " · ", "плановых расходов нет") + s.planNote };
+    }},
+  { id:"planLeft", label:"Планируемый остаток", calc:function(s){
+      return { value: fmtMoney(s.planLeft),
+               sub: (s.opening ? ("начало " + fmtMoney(s.opening) + " + доход − расход") : "доход − расход") + s.planNote,
+               tone: s.planLeft>=0 ? "good" : "bad" };
+    }},
+  { id:"daily", label:"Можно тратить сегодня", calc:function(s){
+      if(s.dailyAllowance===null)
+        return { value:"—", sub:"задайте бюджет по статьям — «План месяца»" };
+      if(s.remainingBudget < 0)
+        return { value:"0 ₸", tone:"bad",
+                 sub:"перерасход " + fmtMoney(-s.remainingBudget) + " — план месяца уже превышен" };
+      return { value: fmtMoney(s.dailyAllowance),
+               sub: "из " + fmtMoney(s.remainingBudget) + " на " + s.daysLeft + " " + pluralize(s.daysLeft,"день","дня","дней") };
+    }},
+  { id:"today", label:"Потрачено сегодня", calc:function(s){
+      var sub = (s.dailyAllowance===null)
+        ? (s.todayCount + " " + pluralize(s.todayCount,"запись","записи","записей") + " за сегодня")
+        : (s.todaySpent > s.dailyAllowance
+            ? ("на " + fmtMoney(s.todaySpent - s.dailyAllowance) + " больше дневной нормы")
+            : ("из " + fmtMoney(s.dailyAllowance) + " на сегодня"));
+      return { value: fmtMoney(s.todaySpent), sub: sub,
+               tone: (s.dailyAllowance!==null && s.todaySpent > s.dailyAllowance) ? "bad" : "" };
+    }},
+  { id:"lend", label:"Мне должны", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.totalLend),
+               sub: s.openLend + " " + pluralize(s.openLend,"запись","записи","записей") };
+    }},
+  { id:"owe", label:"Я должен", tone:"bad", calc:function(s){
+      return { value: fmtMoney(s.totalOwe),
+               sub: s.openOwe + " " + pluralize(s.openOwe,"запись","записи","записей") };
+    }},
+  { id:"goals", label:"Цели накоплений", calc:function(s){
+      if(!state.goals.length) return { value:"—", sub:"целей пока нет" };
+      return { value: s.goalsPct + "%", sub: fmtMoney(s.goalsCurrent) + " из " + fmtMoney(s.goalsTarget) };
+    }},
+  { id:"subs", label:"Подписки в месяц", calc:function(s){
+      return { value: fmtMoney(s.subsMonthly),
+               sub: s.subsCount + " " + pluralize(s.subsCount,"подписка","подписки","подписок") };
+    }},
+  { id:"fixedIncome", label:"Постоянные доходы", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.fixedPlan),
+               sub: s.fixedCount ? ("получено " + fmtMoney(s.paidIn) + " из " + fmtMoney(s.fixedPlan)) : "источников пока нет" };
+    }},
+  { id:"credit", label:"Остаток по кредитам", tone:"bad", calc:function(s){
+      return { value: fmtMoney(s.creditLeft),
+               sub: s.creditCount ? (s.creditLeft>0 ? ("закрытие: " + monthLabel(s.creditLastPeriod)) : "всё выплачено") : "кредитов нет" };
+    }},
+  { id:"save", label:"Откладывать в месяц", calc:function(s){
+      return { value: fmtMoney(s.savePerMonth),
+               sub: s.goalsWithDeadline
+                 ? (s.goalsWithDeadline + " " + pluralize(s.goalsWithDeadline,"цель","цели","целей") + " со сроком")
+                 : "целей со сроком нет" };
+    }}
+];
+function tileDefById(id){ return TILE_DEFS.find(function(t){ return t.id===id; }); }
+/* Набор и порядок плиток. Пока снимок базы не пришёл, берём то, что только что
+   сохранили (pendingTiles), иначе табло на секунду прыгало бы к прежнему виду. */
+function tilesCfg(){
+  var saved = pendingTiles;
+  if(!saved){
+    var d = state.uiSettings.find(function(x){ return x.id==="dashTiles"; });
+    if(d) saved = { order: d.order || [], hidden: d.hidden || [] };
   }
+  var known = {};
+  TILE_DEFS.forEach(function(t){ known[t.id] = true; });
+  var order = ((saved && saved.order) || []).filter(function(id){ return known[id]; });
+  // плитки, которых в сохранённом порядке не было (новые), — в конец
+  TILE_DEFS.forEach(function(t){ if(order.indexOf(t.id) < 0) order.push(t.id); });
+  var hidden = ((saved && saved.hidden) || []).filter(function(id){ return known[id]; });
+  return { order: order, hidden: hidden };
+}
+function saveTilesCfg(cfg){
+  pendingTiles = { order: cfg.order.slice(), hidden: cfg.hidden.slice() };
+  if(db) db.collection("uiSettings").doc("dashTiles").set({
+    order: pendingTiles.order, hidden: pendingTiles.hidden, updatedAt: new Date().toISOString()
+  }).catch(function(){ toast("Настройку плиток не удалось сохранить в облако"); });
+  renderAll();
+}
+function renderTiles(s){
+  var cfg = tilesCfg();
+  var html = cfg.order.filter(function(id){ return cfg.hidden.indexOf(id) < 0; }).map(function(id){
+    var def = tileDefById(id);
+    if(!def) return "";
+    var r = def.calc(s) || {};
+    var tone = (r.tone!==undefined && r.tone!==null) ? r.tone : (def.tone || "");
+    return '<div class="tile'+(tone?" "+tone:"")+'" data-tile="'+def.id+'">'+
+      '<div class="tl-label">'+escapeHtml(def.label)+'</div>'+
+      '<div class="tl-value mono">'+escapeHtml(r.value==null ? "—" : r.value)+'</div>'+
+      '<div class="tl-sub">'+escapeHtml(r.sub || "—")+'</div>'+
+    '</div>';
+  }).join("");
+  var wrap = document.getElementById("dashTiles");
+  wrap.innerHTML = html;
+  // пустая .tiles осталась бы рамкой без содержимого
+  wrap.style.display = html ? "" : "none";
+}
+function openTilesCfgModal(){
+  openModal(
+    '<div class="modal-head"><span class="modal-title">Плитки на главной</span></div>'+
+    '<div class="note-box">Стрелки меняют порядок, метка справа прячет плитку или возвращает её.</div>'+
+    '<div class="tile-cfg" id="tileCfgList"></div>'+
+    '<div class="modal-actions">'+
+      '<button class="btn btn-ghost" id="tileCfgReset">Вернуть как было</button>'+
+      '<button class="btn btn-primary" id="tileCfgClose">Готово</button>'+
+    '</div>',
+    function(veil){
+      function draw(){
+        var cfg = tilesCfg();
+        veil.querySelector("#tileCfgList").innerHTML = cfg.order.map(function(id, i){
+          var def = tileDefById(id);
+          var off = cfg.hidden.indexOf(id) >= 0;
+          return '<div class="row">'+
+            '<div class="cfg-move">'+
+              '<button class="icon-btn" data-up="'+id+'"'+(i===0?" disabled":"")+' title="Выше">↑</button>'+
+              '<button class="icon-btn" data-down="'+id+'"'+(i===cfg.order.length-1?" disabled":"")+' title="Ниже">↓</button>'+
+            '</div>'+
+            '<div class="row-main"><div class="row-title'+(off?" off":"")+'">'+escapeHtml(def.label)+'</div></div>'+
+            '<span class="pill '+(off?"mute":"good")+'" data-toggle="'+id+'">'+(off?"скрыта":"видна")+'</span>'+
+          '</div>';
+        }).join("");
+        wire();
+      }
+      function move(id, delta){
+        var cfg = tilesCfg();
+        var i = cfg.order.indexOf(id), j = i + delta;
+        if(i < 0 || j < 0 || j >= cfg.order.length) return;
+        cfg.order.splice(j, 0, cfg.order.splice(i, 1)[0]);
+        saveTilesCfg(cfg);
+        draw();
+      }
+      function wire(){
+        veil.querySelectorAll("[data-up]").forEach(function(b){
+          b.addEventListener("click", function(){ move(b.getAttribute("data-up"), -1); });
+        });
+        veil.querySelectorAll("[data-down]").forEach(function(b){
+          b.addEventListener("click", function(){ move(b.getAttribute("data-down"), 1); });
+        });
+        veil.querySelectorAll("[data-toggle]").forEach(function(b){
+          b.addEventListener("click", function(){
+            var id = b.getAttribute("data-toggle");
+            var cfg = tilesCfg();
+            var i = cfg.hidden.indexOf(id);
+            if(i >= 0) cfg.hidden.splice(i, 1); else cfg.hidden.push(id);
+            saveTilesCfg(cfg);
+            draw();
+          });
+        });
+      }
+      draw();
+      veil.querySelector("#tileCfgReset").addEventListener("click", function(){
+        saveTilesCfg({ order: TILE_DEFS.map(function(t){ return t.id; }), hidden: [] });
+        draw();
+      });
+      veil.querySelector("#tileCfgClose").addEventListener("click", function(){ closeModal(veil); });
+    }
+  );
+}
+function renderRangeChips(rg){
+  document.getElementById("dashRange").innerHTML = RANGE_MODES.map(function(m){
+    var label = (m[0]==="custom" && rg.mode==="custom") ? rg.datesLabel : m[1];
+    return '<button class="range-chip'+(rg.mode===m[0]?" on":"")+'" data-range="'+m[0]+'">'+escapeHtml(label)+'</button>';
+  }).join("");
+}
+function openCustomRangeModal(){
+  var rg = rangeOf(dashRange);
+  openModal(
+    '<div class="modal-head"><span class="modal-title">Свой период</span></div>'+
+    '<div class="field-grid">'+
+      '<div class="field"><label>С какого дня</label><input type="date" id="rgFrom" value="'+rg.from+'"></div>'+
+      '<div class="field"><label>По какой день</label><input type="date" id="rgTo" value="'+rg.to+'"></div>'+
+    '</div>'+
+    '<div class="note-box">Факт считается по датам, плановые плитки — по месяцам, которые период задевает.</div>'+
+    '<div class="modal-actions"><button class="btn btn-primary" id="rgApply">Показать</button></div>',
+    function(veil){
+      veil.querySelector("#rgApply").addEventListener("click", function(){
+        var f = veil.querySelector("#rgFrom").value, t = veil.querySelector("#rgTo").value;
+        if(!f || !t){ toast("Укажите обе даты"); return; }
+        dashRange = { mode:"custom", from:f, to:t };
+        closeModal(veil);
+        renderDashboard();
+      });
+    }
+  );
+}
+/* Вся арифметика табло в одном месте: факт — по датам периода, плановое — по месяцам,
+   которые период задевает (планы, бюджеты и регулярные платежи живут месяцами). */
+function dashStats(rg){
+  var s = { range: rg };
+  s.entries = state.entries.filter(function(e){ return e.date >= rg.from && e.date <= rg.to; });
+  function sumType(t){
+    return s.entries.filter(function(e){ return e.type===t; })
+      .reduce(function(a,e){ return a + Number(e.amount||0); }, 0);
+  }
+  s.factIncome = sumType("income");
+  s.factExpense = sumType("expense");
+  s.factGoal = sumType("goal_deposit");
+  s.paidIn = 0; s.paidOut = 0; s.paidRows = [];
+  rg.months.forEach(function(p){
+    paidRecurringIn(p).forEach(function(x){
+      if(x.date < rg.from || x.date > rg.to) return;
+      if(x.rec.kind==="income") s.paidIn += x.amount; else s.paidOut += x.amount;
+      s.paidRows.push(x);
+    });
+  });
+  s.income = s.factIncome + s.paidIn;
+  s.expense = s.factExpense + s.paidOut + s.factGoal;
+  s.balance = s.income - s.expense;
 
-  // «сегодня»: записи дня плюс регулярные, отмеченные сегодняшним числом
+  s.planRecurIn = 0; s.planRecurOut = 0; s.planFactIncome = 0; s.planCats = 0;
+  s.planGoal = 0; s.planDebt = 0; s.planIncome = 0; s.planExpense = 0;
+  rg.months.forEach(function(p){
+    var mp = monthPlanSummary(p);
+    s.planRecurIn += mp.planRecurIn;
+    s.planRecurOut += mp.planRecurOut;
+    s.planFactIncome += mp.factIncome;
+    s.planCats += mp.expectedCats;
+    s.planGoal += mp.planGoal;
+    s.planDebt += mp.planDebt;
+    s.planIncome += mp.planIncome;
+    s.planExpense += mp.planExpense;
+  });
+  s.opening = openingBalance(rg.months[0]);
+  s.planLeft = s.opening + s.planIncome - s.planExpense;
+  // план всегда месячный — для дня, недели и своего периода это надо сказать вслух
+  s.planNote = (rg.mode==="month") ? "" : (" · план: " + monthsLabel(rg.months));
+
+  // «можно тратить сегодня» и «потрачено сегодня» — всегда про текущий месяц и день,
+  // выбранный период их не двигает
+  var mpNow = monthPlanSummary(currentPeriod());
+  s.daysLeft = daysInPeriod(currentPeriod()) - new Date().getDate() + 1;
+  s.remainingBudget = mpNow.planCats - mpNow.factPlanned;   // минус здесь и есть перерасход
+  s.dailyAllowance = null;
+  if(mpNow.planCats > 0){
+    s.dailyAllowance = s.remainingBudget < 0 ? 0
+      : (s.daysLeft > 0 ? s.remainingBudget / s.daysLeft : s.remainingBudget);
+  }
   var todayS = todayStr();
-  var todayEntries = state.entries.filter(function(e){ return e.date===todayS; })
-    .slice().sort(function(a,b){ return String(b.createdAt||"").localeCompare(String(a.createdAt||"")); });
+  var todayEntries = state.entries.filter(function(e){ return e.date===todayS; });
   var todayRec = dayRecurringPaid(todayS);
-  var todaySpent = todayEntries.filter(function(e){ return e.type==="expense"; })
-      .reduce(function(sm,e){ return sm+Number(e.amount||0); },0)
+  s.todayCount = todayEntries.length + todayRec.length;
+  s.todaySpent = todayEntries.filter(function(e){ return e.type==="expense"; })
+      .reduce(function(a,e){ return a + Number(e.amount||0); }, 0)
     + todayRec.filter(function(x){ return x.rec.kind!=="income"; })
-      .reduce(function(sm,x){ return sm+x.amount; },0);
-  var todayIncome = todayEntries.filter(function(e){ return e.type==="income"; })
-      .reduce(function(sm,e){ return sm+Number(e.amount||0); },0)
-    + todayRec.filter(function(x){ return x.rec.kind==="income"; })
-      .reduce(function(sm,x){ return sm+x.amount; },0);
-  document.getElementById("tileToday").textContent = fmtMoney(todaySpent);
-  document.getElementById("tileTodaySub").textContent = (dailyAllowance===null)
-    ? (todayEntries.length + todayRec.length) + " " + pluralize(todayEntries.length+todayRec.length,"запись","записи","записей") + " за сегодня"
-    : (todaySpent > dailyAllowance
-        ? "на " + fmtMoney(todaySpent-dailyAllowance) + " больше дневной нормы"
-        : "из " + fmtMoney(dailyAllowance) + " на сегодня");
-  document.getElementById("tileTodayCard").classList.toggle("bad", dailyAllowance!==null && todaySpent > dailyAllowance);
+      .reduce(function(a,x){ return a + x.amount; }, 0);
 
-  var todayHtml = todayEntries.map(rowHtml).join("") + todayRec.map(recRowHtml).join("");
-  document.getElementById("todayList").innerHTML = todayHtml || '<div class="empty-hint">Сегодня записей пока нет</div>';
-  wireRows(document.getElementById("todayList"));
-  var todayParts = [];
-  if(todaySpent) todayParts.push("−" + fmtMoney(todaySpent));
-  if(todayIncome) todayParts.push("+" + fmtMoney(todayIncome));
-  document.getElementById("todayTotal").textContent = todayParts.join(" · ");
-
-  // постоянные доходы — план в месяц и сколько уже получено
   var fixedIncome = state.recurring.filter(function(r){ return r.kind==="income" && r.active!==false; });
-  var fixedPlan = fixedIncome.reduce(function(s,r){ return s+subMonthlyEquivalent(r); },0);
-  document.getElementById("tileFixedIncome").textContent = fmtMoney(fixedPlan);
-  document.getElementById("tileFixedIncomeSub").textContent = fixedIncome.length
-    ? ("получено " + fmtMoney(paidIn) + " из " + fmtMoney(fixedPlan))
-    : "источников пока нет";
+  s.fixedCount = fixedIncome.length;
+  s.fixedPlan = fixedIncome.reduce(function(a,r){ return a + subMonthlyEquivalent(r); }, 0);
 
-  // кредиты — остаток и ближайшая дата закрытия
   var credits = state.recurring.filter(function(r){ return r.kind==="credit"; });
-  var creditLeft = 0, lastPeriod = "";
+  s.creditCount = credits.length;
+  s.creditLeft = 0; s.creditLastPeriod = "";
   credits.forEach(function(r){
     var n = Math.max(1, parseInt(r.termMonths,10)||1);
     var left = n - creditPaidCount(r);
-    creditLeft += left * Number(r.amount||0);
+    s.creditLeft += left * Number(r.amount||0);
     var end = addMonths(r.startPeriod||currentPeriod(), n-1);
-    if(left>0 && (!lastPeriod || end>lastPeriod)) lastPeriod = end;
+    if(left>0 && (!s.creditLastPeriod || end > s.creditLastPeriod)) s.creditLastPeriod = end;
   });
-  document.getElementById("tileCredit").textContent = fmtMoney(creditLeft);
-  document.getElementById("tileCreditSub").textContent = credits.length
-    ? (creditLeft>0 ? ("закрытие: " + monthLabel(lastPeriod)) : "всё выплачено")
-    : "кредитов нет";
 
-  // сколько откладывать в месяц по всем целям со сроком
-  var savePerMonth = state.goals.reduce(function(s,g){ return s + goalPlan(g).perMonth; }, 0);
-  document.getElementById("tileSave").textContent = fmtMoney(savePerMonth);
-  var goalsWithDeadline = state.goals.filter(function(g){ return g.deadline && !goalPlan(g).done; }).length;
-  document.getElementById("tileSaveSub").textContent = goalsWithDeadline
-    ? (goalsWithDeadline + " " + pluralize(goalsWithDeadline,"цель","цели","целей") + " со сроком")
-    : "целей со сроком нет";
+  s.savePerMonth = savePerMonthAll();
+  s.goalsWithDeadline = state.goals.filter(function(g){ return g.deadline && !goalPlan(g).done; }).length;
 
   var activeSubs = state.recurring.filter(function(r){ return r.kind==="subscription" && r.active!==false; });
-  var subsMonthly = activeSubs.reduce(function(s,r){ return s+subMonthlyEquivalent(r); },0);
-  document.getElementById("tileSubs").textContent = fmtMoney(subsMonthly);
-  document.getElementById("tileSubsSub").textContent = activeSubs.length + " " + pluralize(activeSubs.length,"подписка","подписки","подписок");
+  s.subsCount = activeSubs.length;
+  s.subsMonthly = activeSubs.reduce(function(a,r){ return a + subMonthlyEquivalent(r); }, 0);
 
   var openLend = entriesOfType("lend").filter(function(e){ return debtOpenAmount(e) > 0; });
-  var totalLend = openLend.reduce(function(s,e){ return s+debtOpenAmount(e); },0);
-  document.getElementById("tileLend").textContent = fmtMoney(totalLend);
-  document.getElementById("tileLendSub").textContent = openLend.length + " " + pluralize(openLend.length,"запись","записи","записей");
-
+  s.openLend = openLend.length;
+  s.totalLend = openLend.reduce(function(a,e){ return a + debtOpenAmount(e); }, 0);
   var openOwe = entriesOfType("owe").filter(function(e){ return debtOpenAmount(e) > 0; });
-  var totalOwe = openOwe.reduce(function(s,e){ return s+debtOpenAmount(e); },0);
-  document.getElementById("tileOwe").textContent = fmtMoney(totalOwe);
-  document.getElementById("tileOweSub").textContent = openOwe.length + " " + pluralize(openOwe.length,"запись","записи","записей");
+  s.openOwe = openOwe.length;
+  s.totalOwe = openOwe.reduce(function(a,e){ return a + debtOpenAmount(e); }, 0);
 
-  var goalsPct = 0;
-  if(state.goals.length){
-    var totalTarget = state.goals.reduce(function(s,g){ return s+Number(g.targetAmount||0); },0);
-    var totalCurrent = state.goals.reduce(function(s,g){ return s+goalTotal(g); },0);
-    goalsPct = totalTarget>0 ? Math.round(100*totalCurrent/totalTarget) : 0;
-    document.getElementById("tileGoals").textContent = goalsPct + "%";
-    document.getElementById("tileGoalsSub").textContent = fmtMoney(totalCurrent) + " из " + fmtMoney(totalTarget);
-  } else {
-    document.getElementById("tileGoals").textContent = "—";
-    document.getElementById("tileGoalsSub").textContent = "целей пока нет";
-  }
+  s.goalsTarget = state.goals.reduce(function(a,g){ return a + Number(g.targetAmount||0); }, 0);
+  s.goalsCurrent = state.goals.reduce(function(a,g){ return a + goalTotal(g); }, 0);
+  s.goalsPct = s.goalsTarget > 0 ? Math.round(100 * s.goalsCurrent / s.goalsTarget) : 0;
+  return s;
+}
+// сколько строк показываем в карточке периода: за год записей могут быть сотни
+var PERIOD_CARD_LIMIT = 50;
+function renderDashboard(){
+  var period = currentPeriod();
+  var rg = rangeOf(dashRange);
+  var s = dashStats(rg);
+  renderRangeChips(rg);
+  renderTiles(s);
 
+  // карточка записей за период: при «Сегодня» это прежний список дня, при остальных
+  // периодах — записи и отметки платежей за выбранный отрезок
+  var items = s.entries.map(function(e){
+      return { date: e.date, sort: String(e.createdAt||e.date), html: rowHtml(e) };
+    }).concat(s.paidRows.map(function(x){
+      return { date: x.date, sort: x.date, html: recRowHtml(x) };
+    }));
+  items.sort(function(a,b){
+    return a.date===b.date ? b.sort.localeCompare(a.sort) : b.date.localeCompare(a.date);
+  });
+  var shown = items.slice(0, PERIOD_CARD_LIMIT);
+  document.getElementById("todayCardTitle").textContent = rg.mode==="today" ? "Сегодня" : ("Записи · " + rg.label);
+  document.getElementById("todayList").innerHTML = shown.length
+    ? (shown.map(function(x){ return x.html; }).join("") +
+       (items.length > PERIOD_CARD_LIMIT
+         ? '<div class="empty-hint">показаны последние '+PERIOD_CARD_LIMIT+' из '+items.length+' — остальное во вкладке «Все записи»</div>'
+         : ""))
+    : '<div class="empty-hint">'+(rg.mode==="today" ? "Сегодня записей пока нет" : "За этот период записей нет")+'</div>';
+  wireRows(document.getElementById("todayList"));
+  var totalParts = [];
+  if(s.expense) totalParts.push("−" + fmtMoney(s.expense));
+  if(s.income) totalParts.push("+" + fmtMoney(s.income));
+  document.getElementById("todayTotal").textContent = totalParts.join(" · ");
   // upcoming payments & subscriptions
   var upcoming = state.recurring.filter(function(r){ return recActiveIn(r, period); })
     .sort(function(a,b){ return (a.dueDay||1)-(b.dueDay||1); });
@@ -3847,7 +4130,9 @@ function renderPlan(){
   document.getElementById("planExpense").textContent = fmtMoney(s.planExpense);
   var overCats = s.expectedCats - s.planCats;
   document.getElementById("planExpenseSub").textContent = "платежи " + fmtMoney(s.planRecurOut) +
-    " + статьи " + fmtMoney(s.planCats) + (overCats>0 ? (" + сверх плана " + fmtMoney(overCats)) : "");
+    " + статьи " + fmtMoney(s.planCats) + (overCats>0 ? (" + сверх плана " + fmtMoney(overCats)) : "") +
+    (s.planGoal>0 ? (" + цели " + fmtMoney(s.planGoal)) : "") +
+    (s.planDebt>0 ? (" + долги " + fmtMoney(s.planDebt)) : "");
 
   document.getElementById("planLeft").textContent = fmtMoney(s.left);
   document.getElementById("planLeftCard").classList.toggle("good", s.left>=0);

@@ -265,6 +265,52 @@ async function launchBrowser() {
       && await page.locator("#queueChip").isHidden();
   });
 
+  // подсказки-примеры под быстрой записью убраны — есть кнопки «в один клик»
+  await check("подсказок-примеров нет", async () => {
+    await go("dashboard", 200);
+    return (await page.locator(".example-chip").count()) === 0;
+  });
+
+  // плитки плана: доход, расход и остаток
+  await check("плитки плана есть на табло", async () => {
+    const ids = await page.evaluate(() => [...document.querySelectorAll("#dashTiles .tile")].map((e) => e.dataset.tile));
+    return ["planIncome", "planExpense", "planLeft"].every((id) => ids.includes(id));
+  });
+
+  // период табло переключается чипами
+  await check("период табло переключается", async () => {
+    await page.click('#dashRange [data-range="today"]'); await page.waitForTimeout(250);
+    const t1 = clean(await page.locator("#todayCardTitle").textContent());
+    await page.click('#dashRange [data-range="year"]'); await page.waitForTimeout(300);
+    const t2 = clean(await page.locator("#todayCardTitle").textContent());
+    await page.click('#dashRange [data-range="month"]'); await page.waitForTimeout(300);
+    return t1.trim() === "Сегодня" && t2.includes("год");
+  });
+
+  // свой период: за отрезок без записей карточка пустая
+  await check("свой период применяется", async () => {
+    await page.click('#dashRange [data-range="custom"]'); await page.waitForTimeout(250);
+    await page.fill("#rgFrom", "2000-01-01");
+    await page.fill("#rgTo", "2000-01-31");
+    await page.click("#rgApply"); await page.waitForTimeout(350);
+    const empty = (await page.locator("#todayList").innerText()).includes("За этот период записей нет");
+    await page.click('#dashRange [data-range="month"]'); await page.waitForTimeout(300);
+    return empty;
+  });
+
+  // плитки скрываются и переставляются
+  await check("плитку можно скрыть и переставить", async () => {
+    const before = await page.locator("#dashTiles .tile").count();
+    await page.click("#tilesCfgBtn"); await page.waitForTimeout(250);
+    await page.locator('#tileCfgList [data-toggle="subs"]').click(); await page.waitForTimeout(300);
+    await page.locator('#tileCfgList [data-up="save"]').click(); await page.waitForTimeout(300);
+    const order = await page.evaluate(() => [...document.querySelectorAll("#tileCfgList .row-title")].map((e) => e.textContent));
+    await page.click("#tileCfgClose"); await page.waitForTimeout(300);
+    const ids = await page.evaluate(() => [...document.querySelectorAll("#dashTiles .tile")].map((e) => e.dataset.tile));
+    return ids.length === before - 1 && !ids.includes("subs")
+      && order.indexOf("Откладывать в месяц") < order.indexOf("Остаток по кредитам");
+  });
+
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");
   await browser.close();
   process.exit(errors.length ? 1 : 0);
