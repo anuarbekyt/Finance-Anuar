@@ -103,6 +103,10 @@
     font-size: 14px;
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+    /* Двойное касание на телефоне больше не зумит страницу: попасть по кнопке
+       дважды подряд легко, а масштаб потом приходится возвращать руками.
+       Щипок остаётся — им разглядывают фото чека. */
+    touch-action: manipulation;
   }
   h1,h2,h3,.display{
     font-family: var(--font-display);
@@ -124,7 +128,10 @@
     *, *::before, *::after{ animation-duration:.01ms !important; transition-duration:.01ms !important; }
   }
 
-  .wrap{ max-width: 940px; margin: 0 auto; padding: 16px 16px 40px; }
+  /* Установленное на телефон приложение рисуется под строкой состояния
+     (viewport-fit=cover + прозрачная строка статуса), поэтому сверху добавляем её
+     высоту — иначе вывеска налезает на часы. На ноутбуке отступ равен нулю. */
+  .wrap{ max-width: 940px; margin: 0 auto; padding: calc(16px + env(safe-area-inset-top, 0px)) 16px 40px; }
 
   /* ---------- шапка ---------- */
   .app-header{
@@ -360,6 +367,12 @@
     color:var(--ink); font-size:14.5px; padding:10px 11px; font-family:inherit;
   }
   input[type=number], input[type=date], input[type=month]{ font-family:var(--font-num); }
+  /* iPhone сам приближает страницу, когда курсор попадает в поле мельче 16px,
+     и обратно уже не отъезжает. На телефоне поля крупнее, на ноутбуке как были. */
+  @media (max-width:759px){
+    input[type=text], input[type=number], input[type=date], input[type=month],
+    select, textarea, textarea#quickInput{ font-size:16px; }
+  }
   input:focus, select:focus, textarea:focus{ outline:none; border-color:var(--accent); }
   .field-grid{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
   .field{ margin-bottom:12px; }
