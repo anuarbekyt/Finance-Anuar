@@ -705,7 +705,7 @@
       <div class="quick-label">Быстрая запись</div>
       <div class="quick-row">
         <div class="quick-input-wrap">
-          <textarea id="quickInput" placeholder="Продиктуйте или напечатайте: сигареты 1270тг"></textarea>
+          <textarea id="quickInput" placeholder="Продиктуйте или напечатайте трату"></textarea>
         </div>
         <button class="btn btn-ghost" id="quickMicBtn" type="button" title="Голосовой ввод">🎤</button>
         <button class="btn btn-primary" id="quickParseBtn">Разобрать</button>
@@ -992,6 +992,7 @@ var state = {
   recurringPayments: [],
   goals: [],
   categories: [],
+  archivedCategories: [],
   quickButtons: [],
   debtPayments: [],
   monthPlans: [],
@@ -1148,18 +1149,71 @@ function daysInPeriod(period){
   var p = (period||currentPeriod()).split("-");
   return new Date(parseInt(p[0],10), parseInt(p[1],10), 0).getDate();
 }
+// ключ статьи: регистр и лишние пробелы не различаем — «продукты» и «Продукты» одно и то же
+function catKey(name){ return String(name==null?"":name).trim().toLowerCase().replace(/\s+/g," "); }
 // поиск статьи без учёта регистра и лишних пробелов — чтобы не плодить дубли
 function findCategory(name, kind){
-  var key = String(name==null?"":name).trim().toLowerCase();
+  var key = catKey(name);
   if(!key) return null;
   kind = kind || "expense";
   var list = state.categories.filter(function(c){
-    return (c.kind||"expense")===kind && String(c.name||"").trim().toLowerCase()===key;
+    return (c.kind||"expense")===kind && catKey(c.name)===key;
   });
   if(!list.length) return null;
   // если дубли уже завелись раньше — берём тот, на котором висит бюджет
   var withBudget = list.find(function(c){ return Number(c.budget||0) > 0; });
   return withBudget || list[0];
+}
+// то же самое среди убранных в архив: удалённая статья не пропадает, а ждёт возвращения
+function findArchivedCategory(name, kind){
+  var key = catKey(name);
+  if(!key) return null;
+  kind = kind || "expense";
+  return state.archivedCategories.find(function(c){
+    return (c.kind||"expense")===kind && catKey(c.name)===key;
+  }) || null;
+}
+/* Записи хранят статью строкой, поэтому отчёты складывают только точные совпадения.
+   Приводим прошлые записи к написанию статьи — иначе «продукты» и «Продукты»
+   разошлись бы в две полосы в отчёте. */
+function syncEntryCategory(name, kind){
+  if(!db || !name) return;
+  var key = catKey(name);
+  state.entries.forEach(function(e){
+    if(e.type !== kind || !e.category || e.category === name) return;
+    if(catKey(e.category) !== key) return;
+    db.collection("entries").doc(e.id).update({ category:name, updatedAt:new Date().toISOString() });
+  });
+}
+/* Единственная точка создания статьи: возвращает написание, под которым её надо
+   сохранять в записи. Уже существующая — переиспользуется, лежавшая в архиве —
+   возвращается вместе с бюджетом и историей прошлых периодов. */
+function ensureCategory(name, kind){
+  var raw = String(name==null?"":name).trim().replace(/\s+/g," ");
+  kind = kind || "expense";
+  if(!raw) return { name:"", created:false, restored:false };
+  var known = findCategory(raw, kind);
+  if(known){ syncEntryCategory(known.name, kind); return { name:known.name, created:false, restored:false }; }
+  var arch = findArchivedCategory(raw, kind);
+  if(arch){
+    if(db) db.collection("categories").doc(arch.id).update({ archived:false, updatedAt:new Date().toISOString() });
+    syncEntryCategory(arch.name, kind);
+    return { name:arch.name, created:false, restored:true };
+  }
+  if(db) db.collection("categories").add({ name:raw, kind:kind, budget:0, createdAt:new Date().toISOString() });
+  syncEntryCategory(raw, kind);
+  return { name:raw, created:true, restored:false };
+}
+// список статей для выпадающих списков — с пунктом «завести новую» в конце
+var NEW_CAT_VALUE = "__newcat__";
+function catOptionsHtml(kind, selected, emptyLabel){
+  var key = catKey(selected);
+  return '<option value="">'+(emptyLabel || "— выбрать —")+'</option>' +
+    state.categories.filter(function(c){ return (c.kind||"expense")===kind; })
+      .map(function(c){
+        return '<option value="'+escapeHtml(c.name)+'"'+(key && catKey(c.name)===key ? " selected" : "")+'>'+escapeHtml(c.name)+'</option>';
+      }).join("") +
+    '<option value="'+NEW_CAT_VALUE+'">+ новая статья…</option>';
 }
 
 function toast(msg, undoFn){
@@ -1510,7 +1564,10 @@ function subscribeAll(){
 
   var seeded = false;
   db.collection("categories").orderBy("name").onSnapshot(function(snap){
-    state.categories = docsOf(snap);
+    // архивные держим отдельно: в списках их нет, но по ним статья возвращается с историей
+    var all = docsOf(snap);
+    state.categories = all.filter(function(c){ return c.archived !== true; });
+    state.archivedCategories = all.filter(function(c){ return c.archived === true; });
     if(!seeded && snap.size===0){
       seeded = true;
       DEFAULT_EXPENSE_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"expense", createdAt:new Date().toISOString()}); });
@@ -1650,7 +1707,7 @@ function parseQuickEntry(raw){
 }
 
 /* ---------- несколько записей одной фразой ----------
-   «такси 1500, обед 3000 и сигареты 1200» → три записи.
+   «такси 1500, обед 3000 и кофе 1200» → три записи.
    Дробим только когда КАЖДЫЙ кусок несёт свою сумму, иначе
    «статья развлечение, 12500 — заведение Паб» развалилось бы на две бессмысленные строки.
    Хвост «до 10 сентября» суммой не считается, запятая внутри числа (1270,50) не делит. */
@@ -1679,14 +1736,11 @@ function openBatchModal(items){
       var main;
       if(it.type==="lend" || it.type==="owe"){
         main = '<input type="text" class="b-main" data-person="'+i+'" placeholder="Имя" value="'+escapeHtml(it.person||"")+'">';
+      } else if(it.newCat){
+        main = '<input type="text" class="b-main" data-catnew="'+i+'" placeholder="Новая статья" value="'+escapeHtml(it.category||"")+'">';
       } else {
         var kind = it.type==="income" ? "income" : "expense";
-        var opts = state.categories.filter(function(c){ return (c.kind||"expense")===kind; })
-          .map(function(c){
-            var sel = (String(c.name||"").toLowerCase() === String(it.category||"").toLowerCase()) ? " selected" : "";
-            return '<option value="'+escapeHtml(c.name)+'"'+sel+'>'+escapeHtml(c.name)+'</option>';
-          }).join("");
-        main = '<select class="b-main" data-cat="'+i+'"><option value="">— статья —</option>'+opts+'</select>';
+        main = '<select class="b-main" data-cat="'+i+'">'+catOptionsHtml(kind, it.category, "— статья —")+'</select>';
       }
       var typeOpts = BATCH_TYPES.map(function(t){
         return '<option value="'+t[0]+'"'+(t[0]===it.type?" selected":"")+'>'+t[1]+'</option>';
@@ -1716,7 +1770,11 @@ function openBatchModal(items){
         items[parseInt(el.getAttribute("data-amount"),10)].amount = parseFloat(el.value)||0;
       });
       veil.querySelectorAll("[data-cat]").forEach(function(el){
+        if(el.value === NEW_CAT_VALUE) return;          // «+ новая статья…» — не имя, а команда
         items[parseInt(el.getAttribute("data-cat"),10)].category = el.value;
+      });
+      veil.querySelectorAll("[data-catnew]").forEach(function(el){
+        items[parseInt(el.getAttribute("data-catnew"),10)].category = el.value.trim();
       });
       veil.querySelectorAll("[data-person]").forEach(function(el){
         items[parseInt(el.getAttribute("data-person"),10)].person = el.value.trim();
@@ -1732,10 +1790,23 @@ function openBatchModal(items){
           it.type = el.value;
           if(it.type==="lend" || it.type==="owe"){
             if(!it.person) it.person = it.note || "";
-          } else if(!it.category){
+          } else if(!it.category && !it.newCat){
             it.category = guessCategory(it.note||"", it.type==="income" ? "income" : "expense");
           }
           draw();
+        });
+      });
+      // «+ новая статья…» — строка переключается на поле ввода, статья заведётся при сохранении
+      veil.querySelectorAll("[data-cat]").forEach(function(el){
+        el.addEventListener("change", function(){
+          if(el.value !== NEW_CAT_VALUE) return;
+          var idx = el.getAttribute("data-cat");
+          collect();
+          items[parseInt(idx,10)].newCat = true;
+          items[parseInt(idx,10)].category = "";
+          draw();
+          var inp = veil.querySelector('[data-catnew="'+idx+'"]');
+          if(inp) inp.focus();
         });
       });
       veil.querySelectorAll("[data-drop]").forEach(function(el){
@@ -1754,9 +1825,17 @@ function openBatchModal(items){
       for(var i=0;i<items.length;i++){
         var it = items[i];
         if(!it.amount || it.amount<=0){ toast("Строка "+(i+1)+": укажите сумму"); return; }
-        if((it.type==="expense"||it.type==="income") && !it.category){ toast("Строка "+(i+1)+": выберите статью"); return; }
+        if((it.type==="expense"||it.type==="income") && !it.category){ toast("Строка "+(i+1)+": укажите статью"); return; }
         if((it.type==="lend"||it.type==="owe") && !it.person){ toast("Строка "+(i+1)+": укажите имя"); return; }
       }
+      // новую статью заводим один раз на имя: снимок базы придёт позже, дубли не нужны
+      var madeCats = {};
+      items.forEach(function(it){
+        if(it.type!=="expense" && it.type!=="income") return;
+        var k = it.type + "|" + catKey(it.category);
+        if(!madeCats[k]) madeCats[k] = ensureCategory(it.category, it.type).name;
+        it.category = madeCats[k];
+      });
       var total = items.length, results = [], queuedCount = 0;
       closeModal(veil);
       items.forEach(function(it){
@@ -1936,7 +2015,8 @@ function openSettingsModal(){
         var name = inp.value.trim();
         if(!name) return;
         if(findCategory(name, kind)){ toast("Такая статья уже есть"); return; }
-        if(db) db.collection("categories").add({name:name, kind:kind, budget:0, createdAt:new Date().toISOString()});
+        var res = ensureCategory(name, kind);
+        if(res.restored) toast("«"+res.name+"» вернулась из архива — бюджет и прошлые записи на месте");
         inp.value = "";
         setTimeout(function(){ renderCatList(veil, kind); }, 150);
       }
@@ -1949,27 +2029,50 @@ function openSettingsModal(){
 function renderCatList(veil, kind){
   var wrap = veil.querySelector(kind==="income" ? "#catListIncome" : "#catListExpense");
   var list = state.categories.filter(function(c){ return (c.kind||"expense")===kind; });
-  if(!list.length){ wrap.innerHTML = '<div class="empty-hint">Пока нет статей</div>'; return; }
-  wrap.innerHTML = list.map(function(c){
-    var used = state.entries.filter(function(e){ return e.category===c.name; }).length;
+  var archived = state.archivedCategories.filter(function(c){ return (c.kind||"expense")===kind; });
+  function usedCount(c){
+    var key = catKey(c.name);
+    return state.entries.filter(function(e){ return e.type===kind && catKey(e.category)===key; }).length;
+  }
+  var html = list.length ? list.map(function(c){
+    var used = usedCount(c);
     return '<div class="row"><span class="swatch" style="background:'+catColor(c.name, kind)+'"></span>'+
       '<div class="row-main"><div class="row-title">'+escapeHtml(c.name)+'</div>'+
       '<div class="row-sub">'+(Number(c.budget||0)>0 ? ("бюджет "+fmtMoney(c.budget)+" · ") : "")+
         used+" "+pluralize(used,"запись","записи","записей")+'</div></div>'+
-      '<button class="icon-btn" data-delcat="'+c.id+'" data-delname="'+escapeHtml(c.name)+'" data-delused="'+used+'" title="Удалить">✕</button></div>';
-  }).join("");
+      '<button class="icon-btn" data-delcat="'+c.id+'" data-delname="'+escapeHtml(c.name)+'" data-delused="'+used+'" title="Убрать в архив">✕</button></div>';
+  }).join("") : '<div class="empty-hint">Пока нет статей</div>';
+  // архив: статья убрана из списков, но бюджет и прошлые периоды за ней сохранены
+  if(archived.length){
+    html += '<div class="section-label">В архиве</div>' + archived.map(function(c){
+      var used = usedCount(c);
+      return '<div class="row"><span class="swatch" style="background:'+catColor(c.name, kind)+';opacity:.4"></span>'+
+        '<div class="row-main"><div class="row-title">'+escapeHtml(c.name)+'</div>'+
+        '<div class="row-sub">'+(Number(c.budget||0)>0 ? ("бюджет "+fmtMoney(c.budget)+" · ") : "")+
+          used+" "+pluralize(used,"запись","записи","записей")+'</div></div>'+
+        '<button class="icon-btn" data-restorecat="'+c.id+'" title="Вернуть в список">↺</button></div>';
+    }).join("");
+  }
+  wrap.innerHTML = html;
   wrap.querySelectorAll("[data-delcat]").forEach(function(b){
     b.addEventListener("click", function(){
       var used = parseInt(b.getAttribute("data-delused"),10)||0;
       var name = b.getAttribute("data-delname");
-      confirmModal("Удалить статью?",
-        "«"+name+"» пропадёт из списков и потеряет бюджет." +
-        (used ? (" "+used+" "+pluralize(used,"запись останется","записи останутся","записей останутся")+" с этой статьёй — суммы не изменятся.") : ""),
-        "Удалить",
+      confirmModal("Убрать статью в архив?",
+        "«"+name+"» пропадёт из списков, но бюджет и прошлые периоды сохранятся." +
+        (used ? (" "+used+" "+pluralize(used,"запись останется","записи останутся","записей останутся")+" с этой статьёй — суммы не изменятся.") : "")+
+        " Заведёте статью с тем же именем — вернётся вместе с историей.",
+        "В архив",
         function(){
-          if(db) db.collection("categories").doc(b.getAttribute("data-delcat")).delete();
+          if(db) db.collection("categories").doc(b.getAttribute("data-delcat")).update({ archived:true, updatedAt:new Date().toISOString() });
           setTimeout(function(){ renderCatList(veil, kind); }, 150);
         });
+    });
+  });
+  wrap.querySelectorAll("[data-restorecat]").forEach(function(b){
+    b.addEventListener("click", function(){
+      if(db) db.collection("categories").doc(b.getAttribute("data-restorecat")).update({ archived:false, updatedAt:new Date().toISOString() });
+      setTimeout(function(){ renderCatList(veil, kind); }, 150);
     });
   });
 }
@@ -2066,7 +2169,7 @@ function openEntryModal(prefill, editId){
     '</div>'+
     '<div id="fieldsGoal" class="field" style="display:none;">'+
       '<label>Цель</label>'+
-      '<select id="fGoal"><option value="">— выбрать —</option>'+goalOptions+'</select>'+
+      '<select id="fGoal"><option value="">— выбрать —</option>'+goalOptions+'<option value="__newgoal__">+ новая цель…</option></select>'+
     '</div>'+
     '<div class="field-grid">'+
       '<div class="field"><label>Сумма, ₸</label><input type="number" id="fAmount" min="0" step="1" value="'+(prefill.amount!=null?prefill.amount:"")+'"></div>'+
@@ -2134,6 +2237,21 @@ function openEntryModal(prefill, editId){
       updateBudgetHint();
     }
     setType(type);
+    // «+ новая цель…» прямо в записи: цель заводится, не теряя набранную сумму
+    (function(){
+      var gSel = veil.querySelector("#fGoal");
+      gSel.addEventListener("change", function(){
+        if(gSel.value !== "__newgoal__") return;
+        gSel.value = prefill.goalId || "";
+        openGoalModal(null, function(id, name){
+          if(!id) return;
+          var opt = document.createElement("option");
+          opt.value = id; opt.textContent = name;
+          gSel.insertBefore(opt, gSel.lastElementChild);
+          gSel.value = id;
+        });
+      });
+    })();
     veil.querySelectorAll("#typeSeg .seg-opt").forEach(function(o){
       o.addEventListener("click", function(){ setType(o.getAttribute("data-type")); });
     });
@@ -2206,10 +2324,9 @@ function openEntryModal(prefill, editId){
         var catNew = veil.querySelector("#fCategoryNew").value.trim();
         var category = catNew || catSel;
         if(!category){ toast(type==="income" ? "Укажите статью дохода" : "Укажите статью расхода"); return; }
-        var known = findCategory(category, type);
-        if(known) category = known.name;                     // подхватываем существующее написание
-        payload.category = category;
-        if(catNew && !known && db) db.collection("categories").add({name:catNew, kind:type, budget:0, createdAt:new Date().toISOString()});
+        // ensureCategory подхватит существующее написание, вернёт статью из архива
+        // и подтянет к нему прошлые записи с тем же именем в другом регистре
+        payload.category = ensureCategory(category, type).name;
       } else if(type==="lend" || type==="owe"){
         var person = veil.querySelector("#fPerson").value.trim();
         if(!person){ toast("Укажите имя"); return; }
@@ -2219,6 +2336,7 @@ function openEntryModal(prefill, editId){
         payload.termMonths = parseInt(veil.querySelector("#fTerm").value,10) || 0;
       } else if(type==="goal_deposit"){
         var goalId = veil.querySelector("#fGoal").value;
+        if(goalId === "__newgoal__") goalId = "";
         if(!goalId){ toast("Выберите цель"); return; }
         payload.goalId = goalId;
       }
@@ -2315,21 +2433,47 @@ document.getElementById("tilesCfgBtn").addEventListener("click", openTilesCfgMod
   var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
   var micBtn = document.getElementById("quickMicBtn");
   if(!SpeechRec || !micBtn){ if(micBtn) micBtn.style.display = "none"; return; }
+  var input = document.getElementById("quickInput");
   var recognition = new SpeechRec();
   recognition.lang = "ru-RU";
-  recognition.interimResults = false;
+  recognition.continuous = true;       // не обрывать запись после первой фразы
+  recognition.interimResults = true;   // без промежуточных браузер теряет сказанное перед остановкой
   recognition.maxAlternatives = 1;
-  var listening = false;
-  function stopListening(){ listening = false; micBtn.classList.remove("listening"); }
+  var listening = false;   // микрофон включён пользователем, а не браузером
+  var base = "";           // что лежало в поле до начала записи
+  var said = "";           // распознанное за эту запись
+  function paint(interim){
+    input.value = (base + " " + said + " " + (interim||"")).replace(/\s+/g," ").trim();
+  }
+  function stopListening(){
+    listening = false;
+    micBtn.classList.remove("listening");
+    paint("");
+  }
   recognition.addEventListener("result", function(ev){
-    var text = ev.results[0][0].transcript;
-    document.getElementById("quickInput").value = text;
-    runQuickParse();
+    var interim = "";
+    for(var i=ev.resultIndex; i<ev.results.length; i++){
+      var txt = ev.results[i][0].transcript;
+      if(ev.results[i].isFinal) said += " " + txt; else interim += " " + txt;
+    }
+    paint(interim);
   });
-  recognition.addEventListener("end", stopListening);
-  recognition.addEventListener("error", function(){ stopListening(); toast("Не удалось распознать речь"); });
+  // Браузер обрывает распознавание сам — по паузе в речи. Пока микрофон включён,
+  // поднимаем заново, а сказанное остаётся в поле: разбор идёт по кнопке «Разобрать».
+  recognition.addEventListener("end", function(){
+    if(!listening){ stopListening(); return; }
+    try{ recognition.start(); }catch(e){ stopListening(); }
+  });
+  recognition.addEventListener("error", function(ev){
+    var code = ev && ev.error;
+    if(code==="no-speech" || code==="aborted") return;   // это не отказ — end поднимет запись заново
+    stopListening();
+    toast(code==="not-allowed" ? "Нет доступа к микрофону" : "Не удалось распознать речь");
+  });
   micBtn.addEventListener("click", function(){
-    if(listening){ recognition.stop(); return; }
+    if(listening){ listening = false; recognition.stop(); micBtn.classList.remove("listening"); return; }
+    base = input.value.trim();   // продолжаем то, что уже надиктовано, а не затираем
+    said = "";
     try{
       recognition.start();
       listening = true;
@@ -2398,6 +2542,16 @@ function openRecurringModal(existing, defaultKind){
       '<div class="field" id="fieldsTerm" style="display:none;"><label>Срок, месяцев</label>'+
         '<input type="number" id="rTerm" min="1" max="360" value="'+(existing.termMonths||"")+'" placeholder="напр. 12"></div>'+
     '</div>'+
+    '<div class="field" id="fieldsEnd" style="display:none;"><label>Последний платёж</label>'+
+      '<input type="month" id="rEnd" value="'+(existing.termMonths
+        ? addMonths(existing.startPeriod||currentPeriod(), Math.max(1, parseInt(existing.termMonths,10)||1)-1) : "")+'">'+
+      '<div class="note-box">Срок и последний месяц связаны: поправьте любое — второе пересчитается.</div></div>'+
+    '<div class="field"><label>Если день выпадает на выходной</label>'+
+      '<select id="rWeekend">'+
+        '<option value=""'+(!existing.weekendShift?" selected":"")+'>не переносить</option>'+
+        '<option value="next"'+(existing.weekendShift==="next"?" selected":"")+'>перенести вперёд, на понедельник</option>'+
+        '<option value="prev"'+(existing.weekendShift==="prev"?" selected":"")+'>перенести назад, на пятницу</option>'+
+      '</select></div>'+
     '<div class="note-box" id="creditHint" hidden>Укажите платёж и срок — покажу общую сумму и дату закрытия.</div>'+
     '<div class="note-box" id="startHint" hidden>До этого месяца платёж не попадёт в план и в календарь — так можно сдвинуть его вперёд, если за текущий месяц уже заплачено.</div>'+
     '<div class="field" id="fieldsCat"><label id="rCatLabel">Категория (для отчётов)</label>'+
@@ -2443,6 +2597,7 @@ function openRecurringModal(existing, defaultKind){
       kind = k;
       veil.querySelectorAll("#recKindSeg .seg-opt").forEach(function(o){ o.classList.toggle("active", o.getAttribute("data-kind")===k); });
       veil.querySelector("#fieldsTerm").style.display = (k==="credit") ? "" : "none";
+      veil.querySelector("#fieldsEnd").style.display = (k==="credit") ? "" : "none";
       veil.querySelector("#creditHint").hidden = (k!=="credit");
       veil.querySelector("#startHint").hidden = (k==="credit");
       veil.querySelector("#rStartLabel").textContent = k==="credit" ? "Первый платёж" : "Учитывать с месяца";
@@ -2464,9 +2619,27 @@ function openRecurringModal(existing, defaultKind){
     setKind(kind);
     veil.querySelectorAll("#recKindSeg .seg-opt").forEach(function(o){ o.addEventListener("click", function(){ setKind(o.getAttribute("data-kind")); }); });
     veil.querySelectorAll("#recCycleSeg .seg-opt").forEach(function(o){ o.addEventListener("click", function(){ setCycle(o.getAttribute("data-cycle")); }); });
+    // срок и последний месяц — две записи одного и того же: держим их согласованными
+    function syncEndFromTerm(){
+      var st = veil.querySelector("#rStart").value || currentPeriod();
+      var t = parseInt(veil.querySelector("#rTerm").value,10) || 0;
+      veil.querySelector("#rEnd").value = t>0 ? addMonths(st, t-1) : "";
+    }
+    function syncTermFromEnd(){
+      var st = veil.querySelector("#rStart").value || currentPeriod();
+      var en = veil.querySelector("#rEnd").value;
+      if(!en) return;
+      var n = monthsBetween(st, en) + 1;
+      if(n < 1){ n = 1; veil.querySelector("#rEnd").value = st; }   // конец раньше начала — не бывает
+      veil.querySelector("#rTerm").value = n;
+    }
     ["#rAmount","#rTerm","#rStart"].forEach(function(sel){
-      veil.querySelector(sel).addEventListener("input", updCreditHint);
+      veil.querySelector(sel).addEventListener("input", function(){
+        if(sel !== "#rAmount") syncEndFromTerm();
+        updCreditHint();
+      });
     });
+    veil.querySelector("#rEnd").addEventListener("change", function(){ syncTermFromEnd(); updCreditHint(); });
 
     veil.querySelector("#saveRecBtn").addEventListener("click", function(){
       var name = veil.querySelector("#rName").value.trim();
@@ -2478,10 +2651,12 @@ function openRecurringModal(existing, defaultKind){
       if(!db){ toast("Нет соединения"); return; }
       var payload = { name:name, amount:amount, dueDay:Math.min(31,Math.max(1,day)), dueMonth:month,
                        category:category, kind:kind, cycle:cycle, active:isActive,
+                       weekendShift: veil.querySelector("#rWeekend").value || "",
                        startPeriod: veil.querySelector("#rStart").value || "" };
       if(kind==="credit"){
+        if(!veil.querySelector("#rTerm").value) syncTermFromEnd();
         var term = parseInt(veil.querySelector("#rTerm").value,10) || 0;
-        if(term < 1){ toast("Укажите срок в месяцах"); return; }
+        if(term < 1){ toast("Укажите срок или последний месяц платежа"); return; }
         payload.termMonths = term;
         payload.startPeriod = veil.querySelector("#rStart").value || currentPeriod();
         payload.cycle = "monthly";
@@ -2518,13 +2693,29 @@ function togglePayment(recId, period, amount){
   var paid = existing ? !existing.paid : true;
   db.collection("recurringPayments").doc(docId).set({
     recurringId: recId, period: period, amount: amount, paid: paid,
-    paidDate: paid ? todayStr() : ""
+    paidDate: paid ? todayStr() : "",
+    dueDate: (existing && existing.dueDate) || ""   // ручную дату месяца отметка не стирает
+  });
+}
+/* Ручная дата платежа на один месяц — банк сдвигает списание, а график остаётся прежним.
+   Живёт в той же отметке, что «оплачено»: отдельная коллекция ради одного поля не нужна. */
+function setRecDueDate(r, period, dateStr){
+  if(!db) return;
+  var key = recPeriodKey(r, period);
+  var docId = r.id + "__" + key;
+  var existing = state.recurringPayments.find(function(p){ return p.id===docId; });
+  if(existing){ db.collection("recurringPayments").doc(docId).update({ dueDate: dateStr||"" }); return; }
+  if(!dateStr) return;
+  db.collection("recurringPayments").doc(docId).set({
+    recurringId: r.id, period: key, amount: Number(r.amount||0),
+    paid: false, paidDate: "", dueDate: dateStr
   });
 }
 
 /* ============ GOALS ============ */
 document.getElementById("addGoalBtn").addEventListener("click", function(){ openGoalModal(); });
-function openGoalModal(existing){
+// onSaved(id) — чтобы список целей там, откуда открыли, сразу показал новую
+function openGoalModal(existing, onSaved){
   existing = existing || {};
   var per = existing.depositPeriod || "monthly";
   var html =
@@ -2588,7 +2779,11 @@ function openGoalModal(existing){
         db.collection("goals").doc(existing.id).update(payload).then(function(){ toast("Сохранено"); closeModal(veil); });
       } else {
         payload.createdAt = new Date().toISOString();
-        db.collection("goals").add(payload).then(function(){ toast("Добавлено"); closeModal(veil); });
+        db.collection("goals").add(payload).then(function(ref){
+          toast("Добавлено");
+          closeModal(veil);
+          if(onSaved) onSaved(ref && ref.id ? ref.id : "", payload.name);
+        });
       }
     });
     var delBtn = veil.querySelector("#delGoalBtn");
@@ -2673,11 +2868,51 @@ function paidRecurringIn(period){
   });
   return out;
 }
+/* ---- день списания в конкретном месяце ----
+   Банк переносит платёж, если день выпал на выходной, а иногда дату отдельного
+   месяца приходится поставить руками. Оба случая живут здесь, чтобы календарь,
+   план и просрочка считали дату одинаково.
+   Ручная дата хранится в отметке recurringPayments — там же, где «оплачено». */
+function recDueOverride(r, period){
+  var p = state.recurringPayments.find(function(x){ return x.recurringId===r.id && x.period===recPeriodKey(r, period); });
+  var d = (p && p.dueDate) ? String(p.dueDate) : "";
+  return (d && d.slice(0,7)===period) ? d : "";
+}
+function shiftOffWeekend(period, day, mode){
+  if(!mode) return day;
+  var p = period.split("-"), y = parseInt(p[0],10), m = parseInt(p[1],10), last = daysInPeriod(period);
+  function walk(from, dir){
+    var d = from;
+    for(var i=0;i<3;i++){
+      var dow = new Date(y, m-1, d).getDay();
+      if(dow!==0 && dow!==6) return d;
+      d += dir;
+    }
+    return d;
+  }
+  var step = mode==="prev" ? -1 : 1;
+  var res = walk(day, step);
+  if(res < 1 || res > last) res = walk(day, -step);   // упёрлись в край месяца — двигаем в другую сторону
+  return Math.min(last, Math.max(1, res));
+}
+// дата без ручной правки — день списания, поправленный правилом переноса с выходных
+function recDueDefaultDate(r, period){
+  var base = Math.min(daysInPeriod(period), Math.max(1, parseInt(r.dueDay,10)||1));
+  return period + "-" + pad(shiftOffWeekend(period, base, r.weekendShift || ""));
+}
+function recDueDay(r, period){
+  var ov = recDueOverride(r, period) || recDueDefaultDate(r, period);
+  return parseInt(ov.slice(8,10),10) || 1;
+}
+function recDueDate(r, period){ return period + "-" + pad(recDueDay(r, period)); }
+function weekendShiftLabel(mode){
+  return mode==="next" ? "с выходных вперёд" : (mode==="prev" ? "с выходных назад" : "");
+}
 /* на какой день месяца показывать оплату: по факту отметки, а если её проставили
    в другом месяце — на день списания, чтобы день и итог месяца не расходились */
 function recPaidDate(r, payment, period){
   if(payment && payment.paidDate && periodOf(payment.paidDate)===period) return payment.paidDate;
-  return period + "-" + pad(Math.min(daysInPeriod(period), Math.max(1, parseInt(r.dueDay,10)||1)));
+  return recDueDate(r, period);
 }
 /* сдвинуть плановый платёж на следующий месяц */
 function pushRecurring(recId, fromPeriod){
@@ -2916,7 +3151,7 @@ function overdueRecurringList(){
   var period = currentPeriod();
   var day = new Date().getDate();
   return state.recurring.filter(function(r){
-    return recActiveIn(r, period) && !recIsPaid(r, period) && day > (r.dueDay||1);
+    return recActiveIn(r, period) && !recIsPaid(r, period) && day > recDueDay(r, period);
   });
 }
 function overdueDebtsList(){
@@ -3370,7 +3605,7 @@ function renderDashboard(){
   document.getElementById("todayTotal").textContent = totalParts.join(" · ");
   // upcoming payments & subscriptions
   var upcoming = state.recurring.filter(function(r){ return recActiveIn(r, period); })
-    .sort(function(a,b){ return (a.dueDay||1)-(b.dueDay||1); });
+    .sort(function(a,b){ return recDueDay(a, period)-recDueDay(b, period); });
   var overdueItems = overdueRecurringList();
   var upcomingHtml = upcoming.map(function(r){
     var cyc = r.cycle || "monthly";
@@ -3380,8 +3615,8 @@ function renderDashboard(){
     var overdue = overdueItems.indexOf(r) >= 0;
     var icon = r.kind==="subscription" ? "🔁" : (r.kind==="credit" ? "🏦" : (isIncome ? "💵" : "🏠"));
     var dueLabel = (cyc==="yearly" && r.kind!=="credit")
-      ? ("ежегодно, "+(r.dueDay||1)+" "+(MONTHS_RU_GEN[(r.dueMonth||1)-1]||""))
-      : ((isIncome?"":"до ")+(r.dueDay||1)+" числа");
+      ? ("ежегодно, "+recDueDay(r, period)+" "+(MONTHS_RU_GEN[(r.dueMonth||1)-1]||""))
+      : ((isIncome?"":"до ")+recDueDay(r, period)+" числа");
     var statusPill = paid
       ? '<span class="pill good">'+(isIncome?"получено":"оплачено")+'</span>'
       : (overdue ? '<span class="pill bad">'+(isIncome?"не пришло":"просрочен")+'</span>' : '<span class="pill mute">'+dueLabel+'</span>');
@@ -3580,6 +3815,7 @@ function renderRecurringGroup(wrapId, list, emptyHint){
     var metaCycle = cyc==="yearly"
       ? ("ежегодно, "+(r.dueDay||1)+" "+(MONTHS_RU_GEN[(r.dueMonth||1)-1]||""))
       : ((r.kind==="income" ? "приходит " : "до ")+(r.dueDay||1)+" числа");
+    if(r.weekendShift) metaCycle += " · " + weekendShiftLabel(r.weekendShift);
     if(r.startPeriod && r.startPeriod > currentPeriod()) metaCycle += " · учёт с " + monthLabelGen(r.startPeriod);
     return '<div class="rec-item">'+
       '<div class="rec-top"><div><div class="rec-name">'+escapeHtml(r.name)+
@@ -3640,7 +3876,10 @@ function renderCreditGroup(wrapId, list){
       '<div class="rec-top"><div><div class="rec-name">'+escapeHtml(r.name)+
         (r.active===false ? ' <span class="pill mute">на паузе</span>' : '')+'</div>'+
       '<div class="rec-meta">'+fmtMoney(amount)+' × '+n+' '+pluralize(n,"месяц","месяца","месяцев")+
-        ' · всего '+fmtMoney(total)+' · до '+(r.dueDay||1)+' числа'+(r.category?" · "+escapeHtml(r.category):"")+'</div></div>'+
+        ' · всего '+fmtMoney(total)+' · до '+(r.dueDay||1)+' числа'+
+        (r.weekendShift ? (" · "+weekendShiftLabel(r.weekendShift)) : "")+
+        (r.category?" · "+escapeHtml(r.category):"")+'</div></div>'+
+      '<button class="icon-btn" data-creditdates="'+r.id+'" title="Даты платежей">📅</button>'+
       '<button class="icon-btn" data-editrec="'+r.id+'">✎</button></div>'+
       '<div class="prog-line"><span>Выплачено '+paidN+' из '+n+'</span><span>Остаток <b class="mono">'+fmtMoney(left)+'</b></span></div>'+
       '<div class="mini-track"><div class="mini-fill'+(pct>=100?" good":"")+'" style="width:'+pct+'%"></div></div>'+
@@ -3653,12 +3892,60 @@ function renderCreditGroup(wrapId, list){
       togglePayment(el.getAttribute("data-toggle-pay"), el.getAttribute("data-period"), parseFloat(el.getAttribute("data-amount")));
     });
   });
+  wrap.querySelectorAll("[data-creditdates]").forEach(function(el){
+    el.addEventListener("click", function(){
+      var r = recById(el.getAttribute("data-creditdates"));
+      if(r) openCreditDatesModal(r);
+    });
+  });
   wrap.querySelectorAll("[data-editrec]").forEach(function(el){
     el.addEventListener("click", function(){
       var r = recById(el.getAttribute("data-editrec"));
       if(r) openRecurringModal(r);
     });
   });
+}
+/* Даты платежей кредита по месяцам. Правило переноса с выходных уже учтено в графике,
+   здесь правится дата отдельного месяца — когда банк сдвинул списание не по правилу. */
+function openCreditDatesModal(r){
+  var periods = creditPeriods(r);
+  var rows = periods.map(function(p, i){
+    var def = recDueDefaultDate(r, p);
+    var cur = recDueOverride(r, p) || def;
+    return '<div class="row"><div class="row-main">'+
+      '<div class="row-title">'+(i+1)+' · '+capitalize(monthLabel(p))+'</div>'+
+      '<div class="row-sub">по графику '+dateLabel(def)+'</div></div>'+
+      '<input type="date" data-due="'+p+'" style="flex:0 0 152px;width:152px;" '+
+        'min="'+p+'-01" max="'+p+'-'+pad(daysInPeriod(p))+'" value="'+cur+'"></div>';
+  }).join("");
+  openModal(
+    '<div class="modal-head"><span class="modal-title">Даты платежей</span></div>'+
+    '<div class="note-box">«'+escapeHtml(r.name)+'» · по графику '+(r.dueDay||1)+' числа'+
+      (r.weekendShift ? (", "+weekendShiftLabel(r.weekendShift)) : "")+'. Дату любого месяца можно поставить свою.</div>'+
+    '<div>'+rows+'</div>'+
+    '<div class="modal-actions">'+
+      '<button class="btn btn-ghost" id="creditDatesReset">Сбросить все</button>'+
+      '<button class="btn btn-primary" id="creditDatesSave">Сохранить</button>'+
+    '</div>',
+    function(veil){
+      veil.querySelector("#creditDatesSave").addEventListener("click", function(){
+        veil.querySelectorAll("[data-due]").forEach(function(el){
+          var p = el.getAttribute("data-due");
+          var val = el.value || "";
+          // чужой месяц и дата по графику ручной правкой не считаются
+          if(val.slice(0,7) !== p || val === recDueDefaultDate(r, p)) val = "";
+          setRecDueDate(r, p, val);
+        });
+        toast("Даты сохранены");
+        closeModal(veil);
+      });
+      veil.querySelector("#creditDatesReset").addEventListener("click", function(){
+        periods.forEach(function(p){ setRecDueDate(r, p, ""); });
+        toast("Даты вернулись к графику");
+        closeModal(veil);
+      });
+    }
+  );
 }
 function lastNPeriods(n){
   var out = [];
@@ -3839,28 +4126,48 @@ function openQuickButtonModal(existing){
     '</div></div>'+
     '<div class="field-grid">'+
       '<div class="field"><label>Значок</label><input type="text" id="qbIcon" maxlength="2" value="'+escapeHtml(existing.icon||"⚡")+'"></div>'+
-      '<div class="field"><label>Название на кнопке</label><input type="text" id="qbLabel" value="'+escapeHtml(existing.label||"")+'" placeholder="Например: Сигареты"></div>'+
+      '<div class="field"><label>Название на кнопке</label><input type="text" id="qbLabel" value="'+escapeHtml(existing.label||"")+'" placeholder="Как подписать кнопку"></div>'+
     '</div>'+
-    '<div class="field" id="qbCatWrap"><label>Статья</label><select id="qbCat"></select></div>'+
+    '<div class="field" id="qbCatWrap"><label>Статья</label><select id="qbCat"></select>'+
+      '<input type="text" id="qbCatNew" placeholder="Название новой статьи" style="margin-top:6px;display:none;"></div>'+
     '<div class="field" id="qbGoalWrap" style="display:none;"><label>Цель</label><select id="qbGoal"></select></div>'+
     '<div class="field"><label>Сумма, ₸ (оставьте пустым — спросит при нажатии)</label>'+
-      '<input type="number" id="qbAmount" value="'+(existing.amount||"")+'" placeholder="напр. 1270"></div>'+
+      '<input type="number" id="qbAmount" value="'+(existing.amount||"")+'"></div>'+
     '<div class="field"><label>Заметка</label><input type="text" id="qbNote" value="'+escapeHtml(existing.note||"")+'" placeholder="Необязательно"></div>'+
     '<div class="modal-actions">'+
       (existing.id ? '<button class="btn btn-danger" id="qbDel">Удалить</button>' : '')+
       '<button class="btn btn-primary" id="qbSave">Сохранить</button>'+
     '</div>';
   openModal(html, function(veil){
+    var NEW_GOAL_VALUE = "__newgoal__";
+    var catSel = veil.querySelector("#qbCat");
+    var catNewInp = veil.querySelector("#qbCatNew");
+    function syncCatNew(){ catNewInp.style.display = (catSel.value === NEW_CAT_VALUE) ? "" : "none"; }
     function fillCats(kind){
-      var sel = veil.querySelector("#qbCat");
-      sel.innerHTML = '<option value="">— выбрать —</option>' + state.categories
-        .filter(function(c){ return (c.kind||"expense")===kind; })
-        .map(function(c){ return '<option value="'+escapeHtml(c.name)+'">'+escapeHtml(c.name)+'</option>'; }).join("");
-      if(existing.category) sel.value = existing.category;
+      catSel.innerHTML = catOptionsHtml(kind, existing.category);
+      syncCatNew();
     }
-    veil.querySelector("#qbGoal").innerHTML = '<option value="">— выбрать —</option>' + state.goals.map(function(g){
-      return '<option value="'+g.id+'"'+(g.id===existing.goalId?" selected":"")+'>'+escapeHtml(g.name)+'</option>';
-    }).join("");
+    catSel.addEventListener("change", function(){
+      syncCatNew();
+      if(catSel.value === NEW_CAT_VALUE) catNewInp.focus();
+    });
+    var goalSel = veil.querySelector("#qbGoal");
+    // fallbackName — только что созданная цель: снимок базы придёт позже, а выбрать её надо сейчас
+    function fillGoals(selectedId, fallbackName){
+      var list = state.goals.slice();
+      if(selectedId && fallbackName && !list.some(function(g){ return g.id===selectedId; })){
+        list.push({ id:selectedId, name:fallbackName });
+      }
+      goalSel.innerHTML = '<option value="">— выбрать —</option>' + list.map(function(g){
+        return '<option value="'+g.id+'"'+(g.id===selectedId?" selected":"")+'>'+escapeHtml(g.name)+'</option>';
+      }).join("") + '<option value="'+NEW_GOAL_VALUE+'">+ новая цель…</option>';
+    }
+    fillGoals(existing.goalId||"");
+    goalSel.addEventListener("change", function(){
+      if(goalSel.value !== NEW_GOAL_VALUE) return;
+      goalSel.value = existing.goalId || "";
+      openGoalModal(null, function(id, name){ fillGoals(id, name); });
+    });
     function setType(t){
       type = t;
       veil.querySelectorAll("#qbTypeSeg .seg-opt").forEach(function(o){ o.classList.toggle("active", o.getAttribute("data-type")===t); });
@@ -3874,11 +4181,14 @@ function openQuickButtonModal(existing){
     });
     veil.querySelector("#qbSave").addEventListener("click", function(){
       var label = veil.querySelector("#qbLabel").value.trim();
-      var cat = veil.querySelector("#qbCat").value;
-      var goalId = veil.querySelector("#qbGoal").value;
-      if(type!=="goal_deposit" && !cat){ toast("Выберите статью"); return; }
+      var cat = catSel.value;
+      if(cat === NEW_CAT_VALUE) cat = catNewInp.value.trim();
+      var goalId = goalSel.value;
+      if(goalId === NEW_GOAL_VALUE) goalId = "";
+      if(type!=="goal_deposit" && !cat){ toast("Укажите статью"); return; }
       if(type==="goal_deposit" && !goalId){ toast("Выберите цель"); return; }
       if(!db){ toast("Нет соединения"); return; }
+      if(type!=="goal_deposit") cat = ensureCategory(cat, type).name;
       var payload = {
         label: label || cat || "Запись",
         icon: veil.querySelector("#qbIcon").value.trim() || "⚡",
@@ -3991,7 +4301,7 @@ function renderPlan(){
     ? ("осталось " + fmtMoney(s.dueRecurOut)) : "нет платежей";
   var dueWrap = document.getElementById("planDueList");
   dueWrap.innerHTML = s.recurOut.length ? s.recurOut
-    .sort(function(a,b){ return (a.dueDay||1)-(b.dueDay||1); })
+    .sort(function(a,b){ return recDueDay(a, period)-recDueDay(b, period); })
     .map(function(r){ return planRecRow(r, period, false); }).join("")
     : '<div class="empty-hint">Платежей на этот месяц нет</div>';
 
@@ -4000,7 +4310,7 @@ function renderPlan(){
     ? ("ждём " + fmtMoney(s.planRecurIn - s.gotRecurIn)) : "нет источников";
   var incWrap = document.getElementById("planIncomeList");
   incWrap.innerHTML = s.recurIn.length ? s.recurIn
-    .sort(function(a,b){ return (a.dueDay||1)-(b.dueDay||1); })
+    .sort(function(a,b){ return recDueDay(a, period)-recDueDay(b, period); })
     .map(function(r){ return planRecRow(r, period, true); }).join("")
     : '<div class="empty-hint">Постоянных доходов на этот месяц нет</div>';
 
@@ -4055,7 +4365,7 @@ function renderPlan(){
 function planRecRow(r, period, isIncome){
   var paid = recIsPaid(r, period);
   var icon = r.kind==="subscription" ? "🔁" : (r.kind==="credit" ? "🏦" : (isIncome ? "💵" : "🏠"));
-  var meta = fmtMoney(r.amount) + " · " + (isIncome ? "" : "до ") + (r.dueDay||1) + " числа";
+  var meta = fmtMoney(r.amount) + " · " + (isIncome ? "" : "до ") + recDueDay(r, period) + " числа";
   if(r.kind==="credit"){
     var n = Math.max(1, parseInt(r.termMonths,10)||1);
     meta += " · платёж " + (creditPeriods(r).indexOf(period)+1) + " из " + n;
@@ -4115,7 +4425,7 @@ function renderCalendar(){
   var dueByDay = {};
   state.recurring.forEach(function(r){
     if(!recActiveIn(r, calPeriod)) return;
-    var d = Math.min(daysInMonth, Math.max(1, parseInt(r.dueDay,10)||1));
+    var d = recDueDay(r, calPeriod);
     (dueByDay[d] = dueByDay[d] || []).push(r);
   });
 

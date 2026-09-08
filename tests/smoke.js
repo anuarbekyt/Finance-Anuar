@@ -311,6 +311,104 @@ async function launchBrowser() {
       && order.indexOf("Откладывать в месяц") < order.indexOf("Остаток по кредитам");
   });
 
+  // статью можно завести прямо в разборе фразы, не выходя из списка
+  await check("новая статья прямо в разборе фразы", async () => {
+    await go("dashboard", 200);
+    await page.fill("#quickInput", "коворкинг 2000, парковка 500");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(250);
+    if ((await page.locator(".batch-row").count()) !== 2) { await page.keyboard.press("Escape"); return false; }
+    await page.selectOption('[data-cat="0"]', "__newcat__"); await page.waitForTimeout(200);
+    await page.fill('[data-catnew="0"]', "Коворкинг");
+    await page.selectOption('[data-cat="1"]', "Транспорт");
+    await page.click("#batchSave"); await page.waitForTimeout(500);
+    await page.click("#settingsBtn"); await page.waitForTimeout(250);
+    const names = await page.locator("#catListExpense .row-title").allInnerTexts();
+    await page.click("#closeSettings"); await page.waitForTimeout(250);
+    return names.filter((n) => n.trim() === "Коворкинг").length === 1;
+  });
+
+  // удалённая статья уходит в архив и возвращается с прошлыми записями
+  await check("статья возвращается из архива", async () => {
+    await page.click("#settingsBtn"); await page.waitForTimeout(250);
+    const row = page.locator("#catListExpense .row", { hasText: "Коворкинг" });
+    const usedBefore = clean(await row.locator(".row-sub").innerText());
+    await row.locator("[data-delcat]").click(); await page.waitForTimeout(200);
+    await page.click("#cfYes"); await page.waitForTimeout(400);
+    const archived = await page.locator("#catListExpense .row", { hasText: "Коворкинг" }).locator("[data-restorecat]").count();
+    await page.fill("#newCatInputExpense", "коворкинг");
+    await page.click("#addCatBtnExpense"); await page.waitForTimeout(400);
+    const back = page.locator("#catListExpense .row", { hasText: "Коворкинг" });
+    const cnt = await back.count();
+    const usedAfter = clean(await back.first().locator(".row-sub").innerText());
+    await page.click("#closeSettings"); await page.waitForTimeout(250);
+    return archived === 1 && cnt === 1 && usedAfter === usedBefore;
+  });
+
+  // у кредита срок и последний месяц — одно и то же, введённое с разных концов
+  await check("последний месяц платежа задаёт срок", async () => {
+    await go("recurring", 150);
+    await page.click('[data-addrec="credit"]'); await page.waitForTimeout(200);
+    await page.fill("#rName", "Кредит по месяцу");
+    await page.fill("#rAmount", "10000");
+    await page.fill("#rStart", "2026-09");
+    await page.fill("#rEnd", "2027-02");
+    await page.dispatchEvent("#rEnd", "change"); await page.waitForTimeout(200);
+    const term = await page.locator("#rTerm").inputValue();
+    await page.click("#saveRecBtn"); await page.waitForTimeout(350);
+    const card = clean(await page.locator("#recurringListCredits .rec-item", { hasText: "Кредит по месяцу" }).innerText());
+    return term === "6" && card.includes("Закрытие: Февраль 2027");
+  });
+
+  // платёж с выходного переносится на понедельник — как это делает банк
+  await check("перенос платежа с выходного", async () => {
+    const now = new Date();
+    let sat = 1;
+    while (new Date(now.getFullYear(), now.getMonth(), sat).getDay() !== 6) sat++;
+    await go("recurring", 150);
+    await page.click('[data-addrec="bill"]'); await page.waitForTimeout(200);
+    await page.fill("#rName", "Тест выходного");
+    await page.fill("#rAmount", "5000");
+    await page.fill("#rDay", String(sat));
+    await page.selectOption("#rWeekend", "next");
+    await page.click("#saveRecBtn"); await page.waitForTimeout(350);
+    await go("plan", 300);
+    const row = clean(await page.locator("#planDueList .plan-row", { hasText: "Тест выходного" }).innerText());
+    return row.includes("до " + (sat + 2) + " числа");
+  });
+
+  // дату отдельного месяца кредита можно поставить свою
+  await check("своя дата платежа по месяцу", async () => {
+    await go("recurring", 200);
+    await page.locator('#recurringListCredits .rec-item', { hasText: "Кредит Kaspi" })
+      .locator("[data-creditdates]").click(); await page.waitForTimeout(300);
+    const first = page.locator("[data-due]").first();
+    const period = await first.getAttribute("data-due");
+    await first.fill(period + "-22");
+    await page.click("#creditDatesSave"); await page.waitForTimeout(450);
+    await page.locator('#recurringListCredits .rec-item', { hasText: "Кредит Kaspi" })
+      .locator("[data-creditdates]").click(); await page.waitForTimeout(300);
+    const saved = await page.locator("[data-due]").first().inputValue();
+    await page.keyboard.press("Escape"); await page.waitForTimeout(250);
+    return saved === period + "-22";
+  });
+
+  // статью можно завести прямо в кнопке быстрой траты
+  await check("новая статья в кнопке быстрой траты", async () => {
+    await go("dashboard", 200);
+    await page.click("#qbEditToggle"); await page.waitForTimeout(250);
+    await page.click("#qbAdd"); await page.waitForTimeout(250);
+    await page.fill("#qbLabel", "Кофе с собой");
+    await page.selectOption("#qbCat", "__newcat__"); await page.waitForTimeout(150);
+    await page.fill("#qbCatNew", "Кофейни");
+    await page.fill("#qbAmount", "900");
+    await page.click("#qbSave"); await page.waitForTimeout(450);
+    await page.click("#qbEditToggle"); await page.waitForTimeout(200);
+    await page.click("#settingsBtn"); await page.waitForTimeout(250);
+    const names = await page.locator("#catListExpense .row-title").allInnerTexts();
+    await page.click("#closeSettings"); await page.waitForTimeout(250);
+    return names.filter((n) => n.trim() === "Кофейни").length === 1;
+  });
+
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");
   await browser.close();
   process.exit(errors.length ? 1 : 0);
