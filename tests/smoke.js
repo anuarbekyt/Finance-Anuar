@@ -409,6 +409,58 @@ async function launchBrowser() {
     return names.filter((n) => n.trim() === "Кофейни").length === 1;
   });
 
+  // сумма с плитки табло числом: "45 000 ₸" -> 45000
+  const tileNum = async (id) => {
+    const t = await page.locator('#dashTiles [data-tile="' + id + '"] .tl-value').textContent();
+    return parseInt(t.replace(/[^\d-]/g, ""), 10) || 0;
+  };
+
+  // остаток на руках — то же число, что «Остаток на руках» в «Плане месяца»
+  await check("остаток на руках совпадает с планом", async () => {
+    await go("plan", 300);
+    const plan = clean(await page.locator("#planNow").textContent()).trim();
+    await go("dashboard", 300);
+    const tile = clean(await page.locator('#dashTiles [data-tile="cash"] .tl-value').textContent()).trim();
+    return plan === tile && plan !== "0 ₸";
+  });
+
+  // обязательная статья («Связь и интернет» помечена при засеве) не попадает в «Траты сегодня»
+  await check("обязательная статья не входит в траты сегодня", async () => {
+    await go("dashboard", 250);
+    const life0 = await tileNum("todayLife"), all0 = await tileNum("today");
+    await addExpense("Связь и интернет", 7000);
+    await go("dashboard", 300);
+    const life1 = await tileNum("todayLife"), all1 = await tileNum("today");
+    return life1 === life0 && all1 === all0 + 7000;
+  });
+
+  // отметка статьи обязательной убирает её из «Трат сегодня» на лету
+  await check("статью можно перевести в обязательные", async () => {
+    await go("dashboard", 250);
+    const life0 = await tileNum("todayLife");
+    await page.click("#settingsBtn"); await page.waitForTimeout(250);
+    await page.click("#essentialBtn"); await page.waitForTimeout(250);
+    const pill = page.locator('#essList .row', { hasText: "Продукты" }).locator("[data-ess]");
+    const was = await pill.textContent();
+    await pill.click(); await page.waitForTimeout(300);
+    const now = await page.locator('#essList .row', { hasText: "Продукты" }).locator("[data-ess]").textContent();
+    await page.click("#essClose"); await page.waitForTimeout(200);
+    await page.click("#closeSettings"); await page.waitForTimeout(250);
+    await go("dashboard", 300);
+    const life1 = await tileNum("todayLife");
+    return was.trim() === "на жизнь" && now.trim() === "обязательная" && life1 < life0;
+  });
+
+  // нажатие на плитку объясняет, откуда взялось число
+  await check("плитка объясняет себя по нажатию", async () => {
+    await go("dashboard", 250);
+    await page.click('#dashTiles [data-tile="cash"]'); await page.waitForTimeout(250);
+    const title = await page.locator(".modal-veil.show .modal-title").last().textContent();
+    const note = await page.locator(".modal-veil.show .note-box").last().textContent();
+    await page.click("#tileHintClose"); await page.waitForTimeout(250);
+    return title.trim() === "Остаток на руках" && note.includes("на начало месяца");
+  });
+
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");
   await browser.close();
   process.exit(errors.length ? 1 : 0);

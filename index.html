@@ -327,6 +327,10 @@
   .tile.bad{ box-shadow: 0 0 0 1px var(--line), inset 2px 0 0 var(--bad); }
   .tile.bad .tl-value{ color:var(--bad); }
   #dashTiles{ margin-top:10px; }
+  /* плитка табло объясняет себя по нажатию (openTileHintModal) — отсюда курсор и отклик */
+  #dashTiles .tile{ cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  #dashTiles .tile:active{ background:var(--well); }
+  .tiles-hint{ font-size:11px; color:var(--ink-mute); margin-top:7px; text-align:center; }
   .tile-cfg .row-title.off{ color:var(--ink-mute); }
   .tile-cfg .cfg-move{ display:flex; gap:3px; flex:0 0 auto; }
   .tile-cfg .pill{ cursor:pointer; }
@@ -726,6 +730,7 @@
       <button class="btn btn-ghost btn-sm" id="tilesCfgBtn">Плитки</button>
     </div>
     <div class="tiles" id="dashTiles"></div>
+    <div class="tiles-hint" id="dashTilesHint">Нажмите на плитку — покажу, откуда взялось число</div>
 
     <div class="card">
       <div class="card-title"><span id="todayCardTitle">Сегодня</span><span class="mono" id="todayTotal" style="font-size:13px; color:var(--ink-mute)"></span></div>
@@ -816,7 +821,7 @@
           <div class="tl-sub"><button class="btn btn-ghost btn-sm" id="planOpeningBtn" style="padding:4px 9px;">Указать</button></div>
         </div>
         <div class="tile" id="planNowCard">
-          <div class="tl-label">Текущий баланс</div>
+          <div class="tl-label">Остаток на руках</div>
           <div class="tl-value mono" id="planNow">0 ₸</div>
           <div class="tl-sub" id="planNowSub">по факту на сегодня</div>
         </div>
@@ -960,6 +965,11 @@
 var DEFAULT_EXPENSE_CATEGORIES = ["Продукты","Транспорт","Сигареты","Развлечения","Кафе и рестораны",
   "Здоровье","Одежда","Кейтеринг — расходники","Связь и интернет","Прочее"];
 var DEFAULT_INCOME_CATEGORIES = ["Заказы кейтеринга","Зарплата","Подработка","Возврат долга","Прочий доход"];
+// Обязательные статьи — то, что уходит само и на что нельзя «просто не тратить»:
+// связь, коммуналка, лечение по назначению. Кредиты, обязательные платежи, подписки
+// и возврат долгов обязательны по своей природе (это вкладка «Платежи» и «Долги»),
+// поэтому в списке статей их нет. Флаг правится в настройках (openEssentialModal).
+var DEFAULT_ESSENTIAL_CATS = ["Связь и интернет"];
 // Потолок подписки на записи. Фото чеков лежат отдельной коллекцией (см. RECEIPT HANDLING),
 // поэтому документ записи лёгкий и такой лимит держится без тормозов.
 var ENTRIES_LIMIT = 3000;
@@ -1562,15 +1572,26 @@ function subscribeAll(){
     renderAll();
   }, dbError("настройки вида"));
 
-  var seeded = false;
+  var seeded = false, essentialMigrated = false;
   db.collection("categories").orderBy("name").onSnapshot(function(snap){
     // архивные держим отдельно: в списках их нет, но по ним статья возвращается с историей
     var all = docsOf(snap);
     state.categories = all.filter(function(c){ return c.archived !== true; });
     state.archivedCategories = all.filter(function(c){ return c.archived === true; });
+    // База, засеянная до появления обязательных статей, флага не знает: проставляем его
+    // один раз тем статьям, которые обязательны по смыслу. Тронуть можно только статью,
+    // где поля вообще не было, — иначе снятая вручную отметка возвращалась бы сама.
+    if(!essentialMigrated && snap.size>0){
+      essentialMigrated = true;
+      state.categories.forEach(function(c){
+        if((c.kind||"expense")!=="expense" || c.essential!==undefined) return;
+        if(DEFAULT_ESSENTIAL_CATS.indexOf(c.name) < 0) return;
+        if(db) db.collection("categories").doc(c.id).update({ essential:true }).catch(function(){});
+      });
+    }
     if(!seeded && snap.size===0){
       seeded = true;
-      DEFAULT_EXPENSE_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"expense", createdAt:new Date().toISOString()}); });
+      DEFAULT_EXPENSE_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"expense", essential: DEFAULT_ESSENTIAL_CATS.indexOf(name)>=0, createdAt:new Date().toISOString()}); });
       DEFAULT_INCOME_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"income", createdAt:new Date().toISOString()}); });
     }
     renderAll();
@@ -2003,6 +2024,9 @@ function openSettingsModal(){
       '<input type="text" id="newCatInputIncome" placeholder="Новая статья дохода">'+
       '<button class="btn btn-ghost" id="addCatBtnIncome">Добавить</button>'+
     '</div>'+
+    '<div class="section-label">Обязательные траты</div>'+
+    '<div class="note-box">Кредиты, обязательные платежи и подписки обязательны сами по себе — они на вкладке «Платежи». Здесь отмечаются статьи расходов, которые тоже уходят сами: связь, коммуналка, лечение. Отмеченное не попадает в плитку «Траты сегодня» и в дневную норму.</div>'+
+    '<button class="btn btn-ghost" id="essentialBtn" style="margin-top:8px;">Отметить статьи</button>'+
     accountBlockHtml()+
     '<div class="modal-actions"><button class="btn btn-ghost" id="closeSettings">Закрыть</button></div>',
     function(veil){
@@ -2020,6 +2044,7 @@ function openSettingsModal(){
         inp.value = "";
         setTimeout(function(){ renderCatList(veil, kind); }, 150);
       }
+      veil.querySelector("#essentialBtn").addEventListener("click", function(){ openEssentialModal(); });
       veil.querySelector("#addCatBtnExpense").addEventListener("click", function(){ addCat("expense", "#newCatInputExpense"); });
       veil.querySelector("#addCatBtnIncome").addEventListener("click", function(){ addCat("income", "#newCatInputIncome"); });
       veil.querySelector("#closeSettings").addEventListener("click", function(){ closeModal(veil); });
@@ -2038,7 +2063,8 @@ function renderCatList(veil, kind){
     var used = usedCount(c);
     return '<div class="row"><span class="swatch" style="background:'+catColor(c.name, kind)+'"></span>'+
       '<div class="row-main"><div class="row-title">'+escapeHtml(c.name)+'</div>'+
-      '<div class="row-sub">'+(Number(c.budget||0)>0 ? ("бюджет "+fmtMoney(c.budget)+" · ") : "")+
+      '<div class="row-sub">'+(c.essential===true ? "обязательная · " : "")+
+        (Number(c.budget||0)>0 ? ("бюджет "+fmtMoney(c.budget)+" · ") : "")+
         used+" "+pluralize(used,"запись","записи","записей")+'</div></div>'+
       '<button class="icon-btn" data-delcat="'+c.id+'" data-delname="'+escapeHtml(c.name)+'" data-delused="'+used+'" title="Убрать в архив">✕</button></div>';
   }).join("") : '<div class="empty-hint">Пока нет статей</div>';
@@ -2075,6 +2101,44 @@ function renderCatList(veil, kind){
       setTimeout(function(){ renderCatList(veil, kind); }, 150);
     });
   });
+}
+
+/* Что обязательно, а что «на жизнь». Кредиты, платежи и подписки обязательны по своей
+   природе — они регулярные и живут на вкладке «Платежи», отмечать их нечего. Здесь только
+   статьи расходов: связь, коммуналка, лечение уходят сами, а кафе и такси — нет. */
+function openEssentialModal(){
+  openModal(
+    '<div class="modal-head"><span class="modal-title">Обязательное и на жизнь</span></div>'+
+    '<div class="note-box">Отметьте статьи, на которые нельзя «просто не потратить». Они не попадут в плитку «Траты сегодня» и не будут делиться на дни в «Можно тратить сегодня» — но в общий расход и в отчёты войдут как раньше. Кредиты, платежи и подписки обязательны всегда, отмечать их не надо.</div>'+
+    '<div class="tile-cfg" id="essList"></div>'+
+    '<div class="modal-actions"><button class="btn btn-primary" id="essClose">Готово</button></div>',
+    function(veil){
+      function draw(){
+        var list = state.categories.filter(function(c){ return (c.kind||"expense")==="expense"; });
+        veil.querySelector("#essList").innerHTML = list.length ? list.map(function(c){
+          var on = c.essential===true;
+          return '<div class="row">'+
+            '<span class="swatch" style="background:'+catColor(c.name, "expense")+'"></span>'+
+            '<div class="row-main"><div class="row-title">'+escapeHtml(c.name)+'</div></div>'+
+            '<span class="pill '+(on?"warn":"mute")+'" data-ess="'+c.id+'" data-on="'+(on?"1":"0")+'">'+
+              (on?"обязательная":"на жизнь")+'</span></div>';
+        }).join("") : '<div class="empty-hint">Пока нет статей расходов</div>';
+        veil.querySelectorAll("[data-ess]").forEach(function(b){
+          b.addEventListener("click", function(){
+            var id = b.getAttribute("data-ess"), on = b.getAttribute("data-on")==="1";
+            var c = state.categories.find(function(x){ return x.id===id; });
+            if(c) c.essential = !on;                 // отклик сразу, снимок базы придёт следом
+            if(db) db.collection("categories").doc(id).update({ essential: !on, updatedAt:new Date().toISOString() })
+              .catch(function(){ toast("Не удалось сохранить — нет связи"); });
+            draw();
+            renderAll();
+          });
+        });
+      }
+      draw();
+      veil.querySelector("#essClose").addEventListener("click", function(){ closeModal(veil); });
+    }
+  );
 }
 
 /* ============ RECEIPT HANDLING ============ */
@@ -2955,6 +3019,15 @@ function catAvg3(catName, period){
   }
   return months ? Math.round(sum/months) : 0;
 }
+/* ---- обязательная статья или трата «на жизнь» ----
+   Обязательное — то, что уходит само: связь, коммуналка, лечение. Необязательное —
+   то, чем можно управлять сегодня. Плитки «Траты сегодня» и «Можно тратить сегодня»
+   считают только второе, поэтому флаг живёт в самой статье (categories.essential),
+   а не отдельным списком имён: переименование статьи его не теряет. */
+function isEssentialCat(catName){
+  var c = findCategory(catName, "expense") || findArchivedCategory(catName, "expense");
+  return !!(c && c.essential===true);
+}
 function catBudget(catName){
   var c = findCategory(catName, "expense");
   return c ? Number(c.budget||0) : 0;
@@ -3010,6 +3083,14 @@ function monthPlanSummary(period){
   var factGoal = state.entries.filter(function(e){ return e.type==="goal_deposit" && periodOf(e.date)===period; })
     .reduce(function(s,e){ return s+Number(e.amount||0); },0);
 
+  // Долг — это движение наличных, а не доход и не расход: взял в долг — деньги на руках
+  // прибавились, дал в долг — убавились. В планируемый доход и расход они не идут
+  // (там долги считает debtDueIn), но остаток на руках без них неверен.
+  var factOwe = state.entries.filter(function(e){ return e.type==="owe" && periodOf(e.date)===period; })
+    .reduce(function(s,e){ return s+Number(e.amount||0); },0);
+  var factLend = state.entries.filter(function(e){ return e.type==="lend" && periodOf(e.date)===period; })
+    .reduce(function(s,e){ return s+Number(e.amount||0); },0);
+
   // План по статье — это бюджет либо среднее за прошлые месяцы. Раньше сюда добавлялся
   // Math.max(base, fact), из-за чего план подтягивался под факт и перерасход не показывался нигде.
   var factByCat = {};
@@ -3022,7 +3103,7 @@ function monthPlanSummary(period){
     var budget = catBudget(c);
     var plan = budget>0 ? budget : catAvg3(c, period);
     var fact = factByCat[c]||0;
-    return { name:c, budget:budget, plan:plan, fact:fact,
+    return { name:c, budget:budget, plan:plan, fact:fact, essential: isEssentialCat(c),
              over: plan>0 && fact>plan, isAvg: budget<=0 && plan>0,
              expected: Math.max(plan, fact) };            // для прогноза берём худший из двух
   }).filter(function(x){ return x.plan>0 || x.budget>0 || x.fact>0; })
@@ -3032,6 +3113,12 @@ function monthPlanSummary(period){
   var expectedCats = cats.reduce(function(s,c){ return s+c.expected; },0);
   // в «сколько ещё можно потратить» считаем только статьи, у которых план вообще есть
   var factPlanned = cats.filter(function(c){ return c.plan>0; }).reduce(function(s,c){ return s+c.fact; },0);
+  // ...и только необязательные: обязательное уйдёт по графику, дневную норму оно не определяет
+  var life = cats.filter(function(c){ return !c.essential; });
+  var planCatsLife = life.reduce(function(s,c){ return s+c.plan; },0);
+  var factPlannedLife = life.filter(function(c){ return c.plan>0; }).reduce(function(s,c){ return s+c.fact; },0);
+  var factCatsLife = life.reduce(function(s,c){ return s+c.fact; },0);
+  var factCatsEssential = cats.filter(function(c){ return c.essential; }).reduce(function(s,c){ return s+c.fact; },0);
   var opening = openingBalance(period);
 
   // Откладывание и долги — такой же плановый расход, как платежи и статьи.
@@ -3049,10 +3136,13 @@ function monthPlanSummary(period){
     planRecurIn: planRecurIn, gotRecurIn: gotRecurIn,
     factExpense: factExpense, factIncome: factIncome, factGoal: factGoal,
     cats: cats, planCats: planCats, expectedCats: expectedCats, factPlanned: factPlanned,
+    planCatsLife: planCatsLife, factPlannedLife: factPlannedLife,
+    factCatsLife: factCatsLife, factCatsEssential: factCatsEssential,
+    factOwe: factOwe, factLend: factLend,
     planGoal: planGoal, planDebt: planDebt,
     planIncome: planIncome,
     planExpense: planExpense,
-    now: opening + factIncome + gotRecurIn - factExpense - paidRecurOut - factGoal,
+    now: opening + factIncome + gotRecurIn + factOwe - factExpense - paidRecurOut - factGoal - factLend,
     left: opening + planIncome - planExpense
   };
 }
@@ -3268,35 +3358,25 @@ function sumParts(pairs, sep, fallback){
   return out.length ? out.join(sep) : fallback;
 }
 var TILE_DEFS = [
-  { id:"income", label:"Доходы за период", tone:"good", calc:function(s){
-      return { value: fmtMoney(s.income),
-               sub: sumParts([["разовые", s.factIncome], ["постоянные", s.paidIn]], " · ", s.range.datesLabel) };
-    }},
-  { id:"expense", label:"Расходы за период", calc:function(s){
-      return { value: fmtMoney(s.expense),
-               sub: sumParts([["разовые", s.factExpense], ["платежи", s.paidOut], ["цели", s.factGoal]],
-                             " · ", s.range.datesLabel) };
-    }},
-  { id:"balance", label:"Баланс за период", calc:function(s){
-      return { value: fmtMoney(s.balance), sub: "доходы − расходы",
-               tone: s.balance>=0 ? "good" : "bad" };
-    }},
-  { id:"planIncome", label:"Планируемый доход", tone:"good", calc:function(s){
-      return { value: fmtMoney(s.planIncome),
-               sub: sumParts([["постоянные", s.planRecurIn], ["разовые", s.planFactIncome]],
-                             " + ", "плановых доходов нет") + s.planNote };
-    }},
-  { id:"planExpense", label:"Планируемый расход", tone:"bad", calc:function(s){
-      return { value: fmtMoney(s.planExpense),
-               sub: sumParts([["платежи", s.planRecurOut], ["статьи", s.planCats],
-                              ["цели", s.planGoal], ["долги", s.planDebt]],
-                             " · ", "плановых расходов нет") + s.planNote };
-    }},
-  { id:"planLeft", label:"Планируемый остаток", calc:function(s){
-      return { value: fmtMoney(s.planLeft),
-               sub: (s.opening ? ("начало " + fmtMoney(s.opening) + " + доход − расход") : "доход − расход") + s.planNote,
-               tone: s.planLeft>=0 ? "good" : "bad" };
-    }},
+  { id:"cash", label:"Остаток на руках", calc:function(s){
+      return { value: fmtMoney(s.cash),
+               sub: (s.cashOpening ? ("начало " + fmtMoney(s.cashOpening) + " · ") : "без остатка на начало · ") +
+                    "пришло " + fmtMoney(s.cashIn) + " · ушло " + fmtMoney(s.cashOut),
+               tone: s.cash>=0 ? "good" : "bad" };
+    }, hint:"Сколько денег должно быть на руках прямо сейчас. Остаток на начало месяца плюс всё, что пришло, минус всё, что уже потрачено. Будущие платежи сюда не входят — только то, что уже случилось. Долг считается движением денег: взял в долг — прибавилось, дал в долг — убавилось. Остаток на начало месяца задаётся во вкладке «План месяца»." },
+  { id:"todayLife", label:"Траты сегодня", calc:function(s){
+      var sub;
+      if(s.dailyAllowance===null) sub = "без обязательных платежей";
+      else if(s.todayLife > s.dailyAllowance) sub = "на " + fmtMoney(s.todayLife - s.dailyAllowance) + " больше дневной нормы";
+      else sub = "из " + fmtMoney(s.dailyAllowance) + " на сегодня";
+      return { value: fmtMoney(s.todayLife), sub: sub,
+               tone: (s.dailyAllowance!==null && s.todayLife > s.dailyAllowance) ? "bad" : "" };
+    }, hint:"Траты, которыми можно управлять: еда, такси, кафе, покупки. Обязательное сюда не входит — ни кредиты, подписки и счета с вкладки «Платежи», ни статьи, отмеченные обязательными в настройках. Это то число, за которым стоит следить в течение дня." },
+  { id:"today", label:"Потрачено сегодня", calc:function(s){
+      return { value: fmtMoney(s.todaySpent),
+               sub: sumParts([["на жизнь", s.todayLife], ["обязательное", s.todayMust]], " · ",
+                             s.todayCount + " " + pluralize(s.todayCount,"запись","записи","записей") + " за сегодня") };
+    }, hint:"Всё, что ушло сегодня: и траты на жизнь, и обязательное — кредиты, подписки, счета, отмеченные оплаченными сегодня. Взносы в цели сюда не входят: это перекладывание денег, а не трата." },
   { id:"daily", label:"Можно тратить сегодня", calc:function(s){
       if(s.dailyAllowance===null)
         return { value:"—", sub:"задайте бюджет по статьям — «План месяца»" };
@@ -3305,46 +3385,66 @@ var TILE_DEFS = [
                  sub:"перерасход " + fmtMoney(-s.remainingBudget) + " — план месяца уже превышен" };
       return { value: fmtMoney(s.dailyAllowance),
                sub: "из " + fmtMoney(s.remainingBudget) + " на " + s.daysLeft + " " + pluralize(s.daysLeft,"день","дня","дней") };
-    }},
-  { id:"today", label:"Потрачено сегодня", calc:function(s){
-      var sub = (s.dailyAllowance===null)
-        ? (s.todayCount + " " + pluralize(s.todayCount,"запись","записи","записей") + " за сегодня")
-        : (s.todaySpent > s.dailyAllowance
-            ? ("на " + fmtMoney(s.todaySpent - s.dailyAllowance) + " больше дневной нормы")
-            : ("из " + fmtMoney(s.dailyAllowance) + " на сегодня"));
-      return { value: fmtMoney(s.todaySpent), sub: sub,
-               tone: (s.dailyAllowance!==null && s.todaySpent > s.dailyAllowance) ? "bad" : "" };
-    }},
+    }, hint:"Дневная норма: сколько осталось от месячного плана по необязательным статьям, поделённое на оставшиеся дни месяца. Обязательные статьи и платежи в норму не входят — они уйдут по графику. Плана нет — задайте бюджет статьям во вкладке «План месяца»." },
+  { id:"income", label:"Доходы за период", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.income),
+               sub: sumParts([["разовые", s.factIncome], ["постоянные", s.paidIn]], " · ", s.range.datesLabel) };
+    }, hint:"Всё, что пришло за выбранный период: разовые записи доходов плюс постоянные доходы, отмеченные полученными. Взятое в долг сюда не входит — это не доход, его надо вернуть." },
+  { id:"expense", label:"Расходы за период", calc:function(s){
+      return { value: fmtMoney(s.expense),
+               sub: sumParts([["разовые", s.factExpense], ["платежи", s.paidOut], ["цели", s.factGoal]],
+                             " · ", s.range.datesLabel) };
+    }, hint:"Всё, что ушло за выбранный период: разовые траты, оплаченные платежи и взносы в цели. Выданное в долг сюда не входит — эти деньги вам вернут, они на вкладке «Долги»." },
+  { id:"balance", label:"Баланс за период", calc:function(s){
+      return { value: fmtMoney(s.balance), sub: "доходы − расходы · " + s.range.datesLabel,
+               tone: s.balance>=0 ? "good" : "bad" };
+    }, hint:"Доходы минус расходы за выбранный период. Плюс — заработали больше, чем потратили. Это не деньги на руках: остатка на начало периода здесь нет, для него есть плитка «Остаток на руках»." },
+  { id:"planIncome", label:"Планируемый доход", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.planIncome),
+               sub: sumParts([["постоянные", s.planRecurIn], ["разовые", s.planFactIncome]],
+                             " + ", "плановых доходов нет") + s.planNote };
+    }, hint:"Сколько ожидается за месяц: все постоянные доходы целиком (независимо от того, пришли уже или нет) плюс уже записанные разовые доходы. План всегда месячный — если выбран день или неделя, показан план месяца." },
+  { id:"planExpense", label:"Планируемый расход", tone:"bad", calc:function(s){
+      return { value: fmtMoney(s.planExpense),
+               sub: sumParts([["платежи", s.planRecurOut], ["статьи", s.planCats],
+                              ["цели", s.planGoal], ["долги", s.planDebt]],
+                             " · ", "плановых расходов нет") + s.planNote };
+    }, hint:"Во сколько обойдётся месяц целиком: платежи и кредиты + план по статьям (бюджет, а если он не задан — среднее за три месяца) + откладывание в цели + долги, которые надо вернуть в этом месяце. Если по статье уже потрачено больше плана, в расчёт идёт факт." },
+  { id:"planLeft", label:"Планируемый остаток", calc:function(s){
+      return { value: fmtMoney(s.planLeft),
+               sub: (s.opening ? ("начало " + fmtMoney(s.opening) + " + доход − расход") : "доход − расход") + s.planNote,
+               tone: s.planLeft>=0 ? "good" : "bad" };
+    }, hint:"Сколько останется к концу месяца, если всё пойдёт по плану: остаток на начало месяца плюс планируемый доход минус планируемый расход. В отличие от «Остатка на руках» здесь учтено и то, что ещё только предстоит потратить." },
   { id:"lend", label:"Мне должны", tone:"good", calc:function(s){
       return { value: fmtMoney(s.totalLend),
-               sub: s.openLend + " " + pluralize(s.openLend,"запись","записи","записей") };
-    }},
+               sub: s.openLend + " " + pluralize(s.openLend,"незакрытый долг","незакрытых долга","незакрытых долгов") };
+    }, hint:"Сумма невозвращённых долгов вам. Отмеченные месяцы рассрочки из неё вычтены. Считается по всем долгам сразу, выбранный период на неё не влияет." },
   { id:"owe", label:"Я должен", tone:"bad", calc:function(s){
       return { value: fmtMoney(s.totalOwe),
-               sub: s.openOwe + " " + pluralize(s.openOwe,"запись","записи","записей") };
-    }},
+               sub: s.openOwe + " " + pluralize(s.openOwe,"незакрытый долг","незакрытых долга","незакрытых долгов") };
+    }, hint:"Сколько вы должны вернуть. Отмеченные месяцы рассрочки вычтены. Считается по всем долгам сразу, выбранный период на неё не влияет." },
   { id:"goals", label:"Цели накоплений", calc:function(s){
       if(!state.goals.length) return { value:"—", sub:"целей пока нет" };
       return { value: s.goalsPct + "%", sub: fmtMoney(s.goalsCurrent) + " из " + fmtMoney(s.goalsTarget) };
-    }},
+    }, hint:"Насколько собраны все цели вместе: накоплено из общей суммы целей. Накопленное — это стартовая сумма цели плюс все взносы." },
   { id:"subs", label:"Подписки в месяц", calc:function(s){
       return { value: fmtMoney(s.subsMonthly),
-               sub: s.subsCount + " " + pluralize(s.subsCount,"подписка","подписки","подписок") };
-    }},
+               sub: s.subsCount + " " + pluralize(s.subsCount,"подписка","подписки","подписок") + " · кроме пауз" };
+    }, hint:"Во сколько обходятся подписки в месяц. Годовые поделены на 12, чтобы сумму можно было сравнивать с месячной. Подписки на паузе не считаются." },
   { id:"fixedIncome", label:"Постоянные доходы", tone:"good", calc:function(s){
       return { value: fmtMoney(s.fixedPlan),
-               sub: s.fixedCount ? ("получено " + fmtMoney(s.paidIn) + " из " + fmtMoney(s.fixedPlan)) : "источников пока нет" };
-    }},
+               sub: s.fixedCount ? ("в этом месяце получено " + fmtMoney(s.fixedGotMonth)) : "источников пока нет" };
+    }, hint:"Сколько приносят постоянные источники дохода за месяц (годовые поделены на 12). Ниже — сколько из этого уже отмечено полученным в текущем месяце, независимо от выбранного периода." },
   { id:"credit", label:"Остаток по кредитам", tone:"bad", calc:function(s){
       return { value: fmtMoney(s.creditLeft),
                sub: s.creditCount ? (s.creditLeft>0 ? ("закрытие: " + monthLabel(s.creditLastPeriod)) : "всё выплачено") : "кредитов нет" };
-    }},
+    }, hint:"Сколько ещё предстоит выплатить по всем кредитам и рассрочкам: неотмеченные платежи, умноженные на их сумму. Ниже — месяц, когда закроется последний." },
   { id:"save", label:"Откладывать в месяц", calc:function(s){
       return { value: fmtMoney(s.savePerMonth),
                sub: s.goalsWithDeadline
                  ? (s.goalsWithDeadline + " " + pluralize(s.goalsWithDeadline,"цель","цели","целей") + " со сроком")
                  : "целей со сроком нет" };
-    }}
+    }, hint:"Сколько надо откладывать каждый месяц, чтобы успеть к сроку по всем целям сразу. Цели без срока в расчёт не идут." }
 ];
 function tileDefById(id){ return TILE_DEFS.find(function(t){ return t.id===id; }); }
 /* Набор и порядок плиток. Пока снимок базы не пришёл, берём то, что только что
@@ -3358,8 +3458,16 @@ function tilesCfg(){
   var known = {};
   TILE_DEFS.forEach(function(t){ known[t.id] = true; });
   var order = ((saved && saved.order) || []).filter(function(id){ return known[id]; });
-  // плитки, которых в сохранённом порядке не было (новые), — в конец
-  TILE_DEFS.forEach(function(t){ if(order.indexOf(t.id) < 0) order.push(t.id); });
+  // Плитку, которой в сохранённом порядке нет (новую), ставим не в конец, а туда же,
+  // где она стоит в TILE_DEFS относительно уже расставленных: «Остаток на руках»
+  // должен оказаться вверху табло, а не за «Откладывать в месяц».
+  var at = 0;
+  TILE_DEFS.forEach(function(t){
+    var i = order.indexOf(t.id);
+    if(i >= 0){ at = i + 1; return; }
+    order.splice(at, 0, t.id);
+    at++;
+  });
   var hidden = ((saved && saved.hidden) || []).filter(function(id){ return known[id]; });
   return { order: order, hidden: hidden };
 }
@@ -3387,6 +3495,29 @@ function renderTiles(s){
   wrap.innerHTML = html;
   // пустая .tiles осталась бы рамкой без содержимого
   wrap.style.display = html ? "" : "none";
+  document.getElementById("dashTilesHint").style.display = html ? "" : "none";
+  wrap.querySelectorAll("[data-tile]").forEach(function(el){
+    el.addEventListener("click", function(){ openTileHintModal(el.getAttribute("data-tile"), s); });
+  });
+}
+/* Что означает число на плитке. Просили «понятнее, что для чего»: вместо того чтобы
+   пытаться уместить пояснение в подпись на 390px, показываем его по нажатию. */
+function openTileHintModal(id, s){
+  var def = tileDefById(id);
+  if(!def) return;
+  var r = def.calc(s) || {};
+  openModal(
+    '<div class="modal-head"><span class="modal-title">'+escapeHtml(def.label)+'</span></div>'+
+    '<div class="tile" style="border-radius:var(--radius-m); box-shadow:0 0 0 1px var(--line); margin-bottom:12px;">'+
+      '<div class="tl-value mono">'+escapeHtml(r.value==null ? "—" : r.value)+'</div>'+
+      '<div class="tl-sub">'+escapeHtml(r.sub || "—")+'</div>'+
+    '</div>'+
+    '<div class="note-box">'+escapeHtml(def.hint || "")+'</div>'+
+    '<div class="modal-actions"><button class="btn btn-primary" id="tileHintClose">Понятно</button></div>',
+    function(veil){
+      veil.querySelector("#tileHintClose").addEventListener("click", function(){ closeModal(veil); });
+    }
+  );
 }
 function openTilesCfgModal(){
   openModal(
@@ -3518,13 +3649,18 @@ function dashStats(rg){
   // план всегда месячный — для дня, недели и своего периода это надо сказать вслух
   s.planNote = (rg.mode==="month") ? "" : (" · план: " + monthsLabel(rg.months));
 
-  // «можно тратить сегодня» и «потрачено сегодня» — всегда про текущий месяц и день,
-  // выбранный период их не двигает
+  // «остаток на руках», «можно тратить сегодня» и «потрачено сегодня» — всегда про
+  // текущий месяц и сегодняшний день, выбранный период табло их не двигает
   var mpNow = monthPlanSummary(currentPeriod());
+  s.cash = mpNow.now;                 // то же число, что «Остаток на руках» в «Плане месяца»
+  s.cashOpening = mpNow.opening;
+  s.cashIn = mpNow.factIncome + mpNow.gotRecurIn + mpNow.factOwe;
+  s.cashOut = mpNow.factExpense + mpNow.paidRecurOut + mpNow.factGoal + mpNow.factLend;
   s.daysLeft = daysInPeriod(currentPeriod()) - new Date().getDate() + 1;
-  s.remainingBudget = mpNow.planCats - mpNow.factPlanned;   // минус здесь и есть перерасход
+  // дневная норма — только по необязательным статьям: обязательное спишется само
+  s.remainingBudget = mpNow.planCatsLife - mpNow.factPlannedLife;   // минус здесь и есть перерасход
   s.dailyAllowance = null;
-  if(mpNow.planCats > 0){
+  if(mpNow.planCatsLife > 0){
     s.dailyAllowance = s.remainingBudget < 0 ? 0
       : (s.daysLeft > 0 ? s.remainingBudget / s.daysLeft : s.remainingBudget);
   }
@@ -3532,14 +3668,25 @@ function dashStats(rg){
   var todayEntries = state.entries.filter(function(e){ return e.date===todayS; });
   var todayRec = dayRecurringPaid(todayS);
   s.todayCount = todayEntries.length + todayRec.length;
-  s.todaySpent = todayEntries.filter(function(e){ return e.type==="expense"; })
+  // Потрачено сегодня делится надвое: обязательное (платежи по графику и статьи,
+  // отмеченные обязательными) и траты «на жизнь» — то, чем можно управлять сегодня.
+  var todayExp = todayEntries.filter(function(e){ return e.type==="expense"; });
+  s.todayLife = todayExp.filter(function(e){ return !isEssentialCat(e.category); })
+      .reduce(function(a,e){ return a + Number(e.amount||0); }, 0);
+  s.todayMust = todayExp.filter(function(e){ return isEssentialCat(e.category); })
       .reduce(function(a,e){ return a + Number(e.amount||0); }, 0)
     + todayRec.filter(function(x){ return x.rec.kind!=="income"; })
       .reduce(function(a,x){ return a + x.amount; }, 0);
+  s.todaySpent = s.todayLife + s.todayMust;
 
   var fixedIncome = state.recurring.filter(function(r){ return r.kind==="income" && r.active!==false; });
   s.fixedCount = fixedIncome.length;
   s.fixedPlan = fixedIncome.reduce(function(a,r){ return a + subMonthlyEquivalent(r); }, 0);
+  // план постоянных доходов — месячный, поэтому и «получено» берём за текущий месяц:
+  // с s.paidIn (он за выбранный период) при годе выходило «получено 6 млн из 500 тысяч»
+  s.fixedGotMonth = paidRecurringIn(currentPeriod())
+    .filter(function(x){ return x.rec.kind==="income"; })
+    .reduce(function(a,x){ return a + x.amount; }, 0);
 
   var credits = state.recurring.filter(function(r){ return r.kind==="credit"; });
   s.creditCount = credits.length;
@@ -4229,7 +4376,7 @@ document.getElementById("planOpeningBtn").addEventListener("click", function(){
     '<div class="modal-head"><span class="modal-title">Остаток на начало месяца</span></div>'+
     '<div class="field"><label>Сколько денег было на руках и на счетах 1-го числа ('+monthLabel(period)+')</label>'+
     '<input type="number" id="obInput" value="'+(openingBalance(period)||"")+'" placeholder="0"></div>'+
-    '<div class="note-box">От этой суммы считается «Текущий баланс» и «Планируемый остаток».</div>'+
+    '<div class="note-box">От этой суммы считается «Остаток на руках» и «Планируемый остаток».</div>'+
     '<div class="modal-actions"><button class="btn btn-primary" id="obSave">Сохранить</button></div>',
     function(veil){
       var inp = veil.querySelector("#obInput"); inp.focus();
@@ -4275,8 +4422,8 @@ function renderPlan(){
   document.getElementById("planOpeningBtn").textContent = s.opening ? "Изменить" : "Указать";
 
   document.getElementById("planNow").textContent = fmtMoney(s.now);
-  document.getElementById("planNowSub").textContent = "пришло " + fmtMoney(s.factIncome + s.gotRecurIn) +
-    " · ушло " + fmtMoney(s.factExpense + s.paidRecurOut) +
+  document.getElementById("planNowSub").textContent = "пришло " + fmtMoney(s.factIncome + s.gotRecurIn + s.factOwe) +
+    " · ушло " + fmtMoney(s.factExpense + s.paidRecurOut + s.factLend) +
     (s.factGoal>0 ? (" · отложено в цели " + fmtMoney(s.factGoal)) : "");
   document.getElementById("planNowCard").classList.toggle("good", s.now>=0);
   document.getElementById("planNowCard").classList.toggle("bad", s.now<0);
