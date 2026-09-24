@@ -528,6 +528,27 @@ async function launchBrowser() {
     return rows === 2 && cat === "Транспорт" && person === "Серик" && prompt.includes("Статьи расходов");
   });
 
+  // в списке проверки комментарий и статья правятся, новая статья заводится прямо там
+  await check("в списке проверки правятся комментарий и статья", async () => {
+    await page.evaluate(() => {
+      window.financeAI = { json: async () => ({ entries: [
+        { type: "expense", amount: 2500, category: "Транспорт", note: "такси", date: "" }
+      ] }) };
+    });
+    await page.fill("#quickInput", "такси две с половиной");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(400);
+    await page.fill('[data-note="0"]', "Такси до офиса");
+    await page.selectOption('[data-cat="0"]', "__newcat__"); await page.waitForTimeout(200);
+    await page.fill('[data-catnew="0"]', "Поездки по работе");
+    await page.click("#batchSave"); await page.waitForTimeout(500);
+    await page.evaluate(() => { delete window.financeAI; });
+    const saved = await page.evaluate(() => Object.values(window.__store.entries || {})
+      .some((e) => e.note === "Такси до офиса" && e.category === "Поездки по работе" && e.amount === 2500));
+    const cats = await page.evaluate(() => Object.values(window.__store.categories || {})
+      .filter((c) => c.name === "Поездки по работе").length);
+    return saved && cats === 1;
+  });
+
   // ИИ не ответил — фраза не теряется, её разбирают правила приложения
   await check("ИИ не ответил — разбор правилами", async () => {
     await page.evaluate(() => { window.financeAI = { json: () => Promise.reject(new Error("offline")) }; });
