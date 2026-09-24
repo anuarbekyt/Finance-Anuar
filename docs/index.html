@@ -13,7 +13,7 @@
 <style>body{margin:0;padding:0}img{max-width:100%}[hidden]:not([hidden=until-found]){display:none!important}</style>
 </head>
 <body>
-<script src="./config.js?v=202609141601"></script>
+<script src="./config.js?v=202609241536"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore-compat.js"></script>
@@ -29,6 +29,10 @@
   var ALLOWED = (window.FINANCE_ALLOWED_EMAILS || []).map(function (e) {
     return String(e).toLowerCase();
   });
+  // Владелец работает с корневыми коллекциями — там его данные лежали с самого начала.
+  // У остальных допущенных своё пространство spaces/<почта>/…: свои записи, платежи,
+  // долги, цели и статьи. Чужого не видно — это закрывают и правила web/firestore.rules.
+  var OWNER = String(window.FINANCE_OWNER_EMAIL || ALLOWED[0] || "").toLowerCase();
 
   // Приложение ждёт этот промис в initDb(). Резолвим его один раз — после входа.
   var resolveDb = null;
@@ -125,8 +129,23 @@
         signOut: function () { auth.signOut().then(function () { location.reload(); }); }
       };
       hideScreen();
-      if (!resolved) { resolved = true; resolveDb(firebase.firestore()); }
+      if (!resolved) { resolved = true; resolveDb(dbFor(email)); }
     });
+  }
+
+  // Приложение знает только db.collection(имя) и db.doc("коллекция/id") — их и подменяем,
+  // чтобы у второго человека всё легло в его пространство без правок index.html.
+  function dbFor(email) {
+    var fs = firebase.firestore();
+    if (!OWNER || email === OWNER) return fs;
+    var root = fs.collection("spaces").doc(email);
+    return {
+      collection: function (name) { return root.collection(name); },
+      doc: function (path) {
+        var parts = String(path).split("/");
+        return root.collection(parts[0]).doc(parts.slice(1).join("/"));
+      }
+    };
   }
 
   function showSignIn(auth) {
@@ -499,6 +518,25 @@
   .tile-cfg .row-title.off{ color:var(--ink-mute); }
   .tile-cfg .cfg-move{ display:flex; gap:3px; flex:0 0 auto; }
   .tile-cfg .pill{ cursor:pointer; }
+  /* разбивка числа плитки по строкам: «начало + пришло − ушло = на руках» */
+  .money-lines{ margin-bottom:12px; }
+  .money-lines .ml-head{
+    font-family:var(--font-display); font-size:10px; font-weight:600; color:var(--ink-mute);
+    text-transform:uppercase; letter-spacing:.16em; margin:12px 0 4px;
+  }
+  .money-lines .ml-row{
+    display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    padding:7px 0; border-bottom:1px solid var(--line);
+  }
+  .money-lines .ml-label{ font-size:13.5px; min-width:0; }
+  .money-lines .ml-sub{ display:block; font-size:11.5px; color:var(--ink-mute); margin-top:2px; }
+  .money-lines .ml-num{ font-family:var(--font-num); font-size:13.5px; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .money-lines .ml-row.total{ border-bottom:none; padding-top:10px; }
+  .money-lines .ml-row.total .ml-label{ font-weight:700; }
+  .money-lines .ml-row.total .ml-num{ font-size:17px; font-weight:700; }
+  .money-lines .good{ color:var(--good); }
+  .money-lines .bad{ color:var(--bad); }
+  .money-lines .ml-del{ margin-left:6px; }
 
   /* ---------- списки ---------- */
   .row{
@@ -983,7 +1021,7 @@
         <div class="tile">
           <div class="tl-label">Остаток на начало месяца</div>
           <div class="tl-value mono" id="planOpening">0 ₸</div>
-          <div class="tl-sub"><button class="btn btn-ghost btn-sm" id="planOpeningBtn" style="padding:4px 9px;">Указать</button></div>
+          <div class="tl-sub"><span id="planOpeningSrc"></span> <button class="btn btn-ghost btn-sm" id="planOpeningBtn" style="padding:4px 9px;">Указать</button></div>
         </div>
         <div class="tile" id="planNowCard">
           <div class="tl-label">Остаток на руках</div>
@@ -1003,7 +1041,7 @@
         <div class="tile" id="planLeftCard">
           <div class="tl-label">Планируемый остаток</div>
           <div class="tl-value mono" id="planLeft">0 ₸</div>
-          <div class="tl-sub">начало + доход − расход</div>
+          <div class="tl-sub">на руках + ждём − ещё отдать</div>
         </div>
       </div>
     </div>
@@ -1172,6 +1210,7 @@ var state = {
   debtPayments: [],
   monthPlans: [],
   uiSettings: [],
+  cashChecks: [],
   entriesTruncated: false,
   me: ""
 };
@@ -1736,6 +1775,12 @@ function subscribeAll(){
     pendingTiles = null;
     renderAll();
   }, dbError("настройки вида"));
+
+  // сверки остатка с реальностью: разница между тем, что вышло по записям, и тем, что есть
+  db.collection("cashChecks").limit(500).onSnapshot(function(snap){
+    state.cashChecks = docsOf(snap);
+    renderAll();
+  }, dbError("сверки"));
 
   var seeded = false, essentialMigrated = false;
   db.collection("categories").orderBy("name").onSnapshot(function(snap){
@@ -3157,10 +3202,147 @@ function pushRecurring(recId, fromPeriod){
     });
   });
 }
-/* ---- остаток на начало месяца ---- */
-function openingBalance(period){
+/* ---- деньги на руках: движение за отрезок дат ----
+   Всё, что меняет сумму на руках, считается только здесь: доходы и траты, отмеченные
+   платежи, взносы в цели (деньги в целях на руках не считаются), долги (взял — прибавилось,
+   дал — убавилось), отмеченные месяцы рассрочки долга и поправки сверки. Из этого
+   собираются остаток на начало месяца, «На руках», «Пришло» и «Ушло». */
+function cashFlowRange(from, to){
+  var f = { income:0, recIn:0, borrowed:0, debtIn:0, expense:0, recOut:0, goal:0, lent:0, debtOut:0, corr:0 };
+  function inR(d){ return !!d && d >= from && d <= to; }
+  state.entries.forEach(function(e){
+    if(!inR(e.date)) return;
+    var a = Number(e.amount||0);
+    if(e.type==="income") f.income += a;
+    else if(e.type==="expense") f.expense += a;
+    else if(e.type==="goal_deposit") f.goal += a;
+    else if(e.type==="owe") f.borrowed += a;
+    else if(e.type==="lend") f.lent += a;
+  });
+  for(var p = periodOf(from); p <= periodOf(to); p = addMonths(p, 1)){
+    paidRecurringIn(p).forEach(function(x){
+      if(!inR(x.date)) return;
+      if(x.rec.kind==="income") f.recIn += x.amount; else f.recOut += x.amount;
+    });
+  }
+  // отмеченный месяц рассрочки долга — деньги ушли (мой долг) или пришли (мне вернули)
+  state.debtPayments.forEach(function(d){
+    if(!d.paid) return;
+    var e = state.entries.find(function(x){ return x.id===d.entryId; });
+    var term = e ? (parseInt(e.termMonths,10)||0) : 0;
+    if(term < 2) return;
+    if(!inR(d.paidDate || (d.period + "-01"))) return;
+    var a = Number(d.amount!=null ? d.amount : Number(e.amount||0)/term) || 0;
+    if(e.type==="owe") f.debtOut += a; else if(e.type==="lend") f.debtIn += a;
+  });
+  state.cashChecks.forEach(function(c){ if(inR(c.date)) f.corr += Number(c.diff||0); });
+  f.in = f.income + f.recIn + f.borrowed + f.debtIn;
+  f.out = f.expense + f.recOut + f.goal + f.lent + f.debtOut;
+  f.net = f.in - f.out + f.corr;
+  return f;
+}
+// движение за месяц; кэш живёт, пока не пришёл новый снимок базы (снимок — новый массив)
+var flowCache = { refs: null, months: {} };
+function monthFlow(period){
+  var refs = [state.entries, state.recurring, state.recurringPayments, state.debtPayments, state.cashChecks];
+  if(!flowCache.refs || refs.some(function(r, i){ return r !== flowCache.refs[i]; })) flowCache = { refs: refs, months: {} };
+  if(!flowCache.months[period]) flowCache.months[period] = cashFlowRange(period + "-01", period + "-31");
+  return flowCache.months[period];
+}
+/* ---- остаток на начало месяца ----
+   Указывается руками один раз, дальше переносится сам: начало месяца = конец прошлого.
+   Ручное значение в любом месяце перебивает перенос. auto:true в документе месяца —
+   «считать автоматически»: введённая сумма при этом не стирается, просто не действует. */
+function manualOpening(period){
   var m = state.monthPlans.find(function(x){ return x.id===period; });
-  return m ? Number(m.openingBalance||0) : 0;
+  if(!m || m.auto===true || m.openingBalance==null || m.openingBalance==="") return null;
+  return Number(m.openingBalance) || 0;
+}
+function firstMoneyPeriod(){
+  var first = "";
+  state.entries.forEach(function(e){ if(e.date && (!first || e.date < first)) first = e.date; });
+  state.recurringPayments.forEach(function(x){
+    if(x.paid && x.paidDate && (!first || x.paidDate < first)) first = x.paidDate;
+  });
+  return first ? periodOf(first) : "";
+}
+// { value, source: "manual" | "carry" (перенесено с прошлого месяца) | "none" (с нуля, остаток нигде не задан) }
+function openingInfo(period){
+  var anchors = state.monthPlans.map(function(m){ return m.id; })
+    .filter(function(id){ return /^\d{4}-\d{2}$/.test(id) && id <= period && manualOpening(id)!==null; }).sort();
+  var start = anchors.length ? anchors[0] : firstMoneyPeriod();
+  if(!start || start > period) return { value: 0, source: anchors.length ? "carry" : "none" };
+  var bal = manualOpening(start) || 0;
+  for(var p = start; p < period; p = addMonths(p, 1)){
+    bal += monthFlow(p).net;
+    var next = addMonths(p, 1);
+    if(manualOpening(next)!==null) bal = manualOpening(next);
+  }
+  return { value: bal, source: manualOpening(period)!==null ? "manual" : (anchors.length ? "carry" : "none") };
+}
+function openingBalance(period){ return openingInfo(period).value; }
+
+/* ---- до какого дня надо дожить на то, что есть ----
+   Ближайшее ожидаемое поступление — постоянный доход, ещё не отмеченный «Пришло»,
+   со сроком не раньше сегодняшнего. Просроченный неотмеченный доход не в счёт:
+   рассчитывать на деньги, которых не видно, нельзя. Доходов нет — до конца месяца. */
+function nextInflow(){
+  var t = todayStr(), cur = currentPeriod(), best = null;
+  state.recurring.forEach(function(r){
+    if(r.kind!=="income") return;
+    for(var i=0;i<13;i++){
+      var p = addMonths(cur, i);
+      if(!recActiveIn(r, p) || recIsPaid(r, p)) continue;
+      var d = recDueDate(r, p);
+      if(d < t) continue;
+      if(!best || d < best.date) best = { date:d, name:r.name||"Доход", amount:Number(r.amount||0) };
+      break;
+    }
+  });
+  return best;
+}
+/* ---- что ещё надо отдать до поступления ----
+   Неоплаченные платежи и кредиты со сроком до дня поступления (просроченные тоже),
+   мои долги к возврату за это время, недоотложенное в цели за этот месяц и остаток
+   плана по обязательным статьям этого месяца. То, что списывается в день поступления,
+   сюда не входит: его закроют пришедшие деньги. */
+function mustPayUntil(H){
+  var cur = currentPeriod(), items = [];
+  for(var p = cur; p <= periodOf(H); p = addMonths(p, 1)){
+    state.recurring.forEach(function(r){
+      if(r.kind==="income" || !recActiveIn(r, p) || recIsPaid(r, p)) return;
+      var d = recDueDate(r, p);
+      if(d >= H) return;
+      items.push({ kind:"rec", label:r.name||"Платёж", date:d, amount:Number(r.amount||0) });
+    });
+  }
+  state.entries.forEach(function(e){
+    if(e.type!=="owe" || debtOpenAmount(e)<=0) return;
+    var term = parseInt(e.termMonths,10) || 0;
+    var who = "Долг" + (e.person ? ": " + e.person : "");
+    if(term >= 2){
+      var day = parseInt(String(e.date||"").slice(8,10),10) || 1;
+      debtPeriods(e).forEach(function(q){
+        var d = state.debtPayments.find(function(x){ return x.id===e.id+"__"+q; });
+        if(d && d.paid) return;
+        var due = q + "-" + pad(Math.min(day, daysInPeriod(q)));
+        if(q > cur && due >= H) return;
+        items.push({ kind:"debt", label:who, date:due, amount:Number(e.amount||0)/term });
+      });
+      return;
+    }
+    if(e.dueDate && e.dueDate < H) items.push({ kind:"debt", label:who, date:e.dueDate, amount:debtOpenAmount(e) });
+  });
+  var goalLeft = Math.max(0, savePerMonthAll() - monthFlow(cur).goal);
+  if(goalLeft > 0) items.push({ kind:"goal", label:"Отложить в цели", date:"", amount:goalLeft });
+  var mp = monthPlanSummary(cur);
+  mp.cats.filter(function(c){ return c.essential && c.plan > c.fact; }).forEach(function(c){
+    items.push({ kind:"cat", label:c.name, date:"", amount:c.plan - c.fact });
+  });
+  items.sort(function(a,b){ return (a.date||"9999") < (b.date||"9999") ? -1 : ((a.date||"9999") > (b.date||"9999") ? 1 : 0); });
+  var sum = function(k){ return items.filter(function(x){ return x.kind===k; }).reduce(function(s,x){ return s+x.amount; },0); };
+  return { items: items, rec: sum("rec"), debt: sum("debt"), goal: sum("goal"), cat: sum("cat"),
+           total: items.reduce(function(s,x){ return s+x.amount; },0) };
 }
 /* ---- план по статье расходов: бюджет, иначе среднее за 3 прошлых месяца ---- */
 function catAvg3(catName, period){
@@ -3293,6 +3475,13 @@ function monthPlanSummary(period){
   var planDebt = debtDueIn(period);
   var planExpense = planRecurOut + expectedCats + planGoal + planDebt;
   var planIncome = planRecurIn + factIncome;
+  // на руках — начало месяца плюс всё движение денег за месяц (cashFlowRange);
+  // к концу месяца — это же число плюс ещё ожидаемое минус ещё не отданное
+  var flow = monthFlow(period);
+  var now = opening + flow.net;
+  var restCats = cats.reduce(function(s,c){ return s + Math.max(0, c.plan - c.fact); },0);
+  var left = now + (planRecurIn - gotRecurIn) - (planRecurOut - paidRecurOut) - planDebt
+           - Math.max(0, planGoal - factGoal) - restCats;
 
   return {
     period: period, opening: opening,
@@ -3307,8 +3496,9 @@ function monthPlanSummary(period){
     planGoal: planGoal, planDebt: planDebt,
     planIncome: planIncome,
     planExpense: planExpense,
-    now: opening + factIncome + gotRecurIn + factOwe - factExpense - paidRecurOut - factGoal - factLend,
-    left: opening + planIncome - planExpense
+    flow: flow, restCats: restCats,
+    now: now,
+    left: left
   };
 }
 
@@ -3522,7 +3712,154 @@ function sumParts(pairs, sep, fallback){
                  .map(function(p){ return p[0] + " " + fmtMoney(p[1]); });
   return out.length ? out.join(sep) : fallback;
 }
+/* строки разбивки в пояснении плитки: знак, подпись, сумма и мелкая подпись под ней */
+function mlHead(text){ return '<div class="ml-head">'+escapeHtml(text)+'</div>'; }
+// sign: "+" / "−" — слагаемое (нулевое не показываем, если keep не задан), "" — исходная сумма, "=" — итог
+function mlRow(sign, label, amount, sub, keep){
+  if((sign==="+" || sign==="−") && Math.round(amount)===0 && !keep) return "";
+  var tone = sign==="+" ? "good" : ((sign==="=" && amount<0) ? "bad" : (sign==="=" ? "good" : ""));
+  var shown = (sign==="+" || sign==="−") ? sign + " " + fmtMoney(Math.abs(amount)) : fmtMoney(amount);
+  return '<div class="ml-row'+(sign==="=" ? " total" : "")+'">'+
+    '<span class="ml-label">'+escapeHtml(label)+(sub ? '<span class="ml-sub">'+escapeHtml(sub)+'</span>' : '')+'</span>'+
+    '<span class="ml-num '+tone+'">'+shown+'</span>'+
+  '</div>';
+}
+// «10 октября», год — только если не текущий
+// заголовок с ненулевыми строками под ним; если всё по нулям — одна строка «Пришло 0 ₸»
+function mlSection(title, sign, pairs){
+  var rows = pairs.map(function(x){ return mlRow(sign, x[0], x[1]); }).join("");
+  return rows ? mlHead(title) + rows : mlRow(sign, title, 0, "", true);
+}
+function shortDate(d){
+  if(!d) return "";
+  var full = dateLabel(d);
+  return d.slice(0,4)===todayStr().slice(0,4) ? full.replace(/ \d{4}$/, "") : full;
+}
+function openingSourceLabel(info, period){
+  if(info.source==="manual") return "указано вручную";
+  if(info.source==="carry") return "перенесено с " + monthLabelGen(addMonths(period, -1));
+  return "остаток ни разу не указан — считаю с нуля";
+}
+function horizonLabel(s){
+  return s.next ? ("до " + shortDate(s.next.date)) : "до конца месяца";
+}
+// «На руках»: из чего сложилось число
+function handLinesHtml(s){
+  var f = s.handFlow, cur = currentPeriod();
+  var checks = state.cashChecks.filter(function(c){ return periodOf(c.date)===cur; })
+    .sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+  return '<div class="money-lines">'+
+    mlRow("", "Начало " + monthLabelGen(cur), s.handOpening.value, openingSourceLabel(s.handOpening, cur))+
+    mlSection("Пришло", "+", [["Доходы", f.income], ["Постоянные доходы", f.recIn],
+                              ["Взял в долг", f.borrowed], ["Вернули долг", f.debtIn]])+
+    mlSection("Ушло", "−", [["Траты по статьям", f.expense], ["Платежи и кредиты", f.recOut],
+                            ["Отложено в цели", f.goal], ["Дал в долг", f.lent], ["Вернул долг", f.debtOut]])+
+    (checks.length ? mlHead("Сверка") + checks.map(function(c){
+      return '<div class="ml-row"><span class="ml-label">'+(Number(c.diff)<0 ? "Не записано трат" : "Лишнее в записях")+
+        '<span class="ml-sub">'+escapeHtml(shortDate(c.date))+' · по записям '+fmtMoney(c.expected)+', было '+fmtMoney(c.actual)+'</span></span>'+
+        '<span class="ml-num">'+(Number(c.diff)<0 ? "− " : "+ ")+fmtMoney(Math.abs(Number(c.diff)||0))+
+        '<button class="icon-btn ml-del" data-delcheck="'+c.id+'" title="Убрать поправку">✕</button></span></div>';
+    }).join("") : "")+
+    mlRow("=", "На руках", s.hand)+
+  '</div>';
+}
+function mustLinesHtml(s){
+  var kinds = { rec:"платёж", debt:"долг", goal:"цели", cat:"обязательная статья, остаток плана" };
+  return '<div class="money-lines">'+
+    (s.must.items.length ? s.must.items.map(function(x){
+      var when = x.date ? (x.date < todayStr() ? "просрочено с " + shortDate(x.date) : shortDate(x.date)) : "в этом месяце";
+      return mlRow("−", x.label, x.amount, kinds[x.kind] + " · " + when, true);
+    }).join("") : '<div class="empty-hint">До поступления платить нечего</div>')+
+    mlRow("=", "Итого " + horizonLabel(s), s.must.total)+
+  '</div>';
+}
+function freeLinesHtml(s){
+  return '<div class="money-lines">'+
+    mlRow("", "На руках", s.hand)+
+    mlRow("−", "Платежи и кредиты", s.must.rec)+
+    mlRow("−", "Вернуть долги", s.must.debt)+
+    mlRow("−", "Отложить в цели", s.must.goal)+
+    mlRow("−", "Обязательные статьи", s.must.cat)+
+    mlRow("=", "Свободно " + horizonLabel(s), s.free)+
+    mlRow("=", "В день, " + s.freeDays + " " + pluralize(s.freeDays,"день","дня","дней"), s.perDayStart)+
+  '</div>';
+}
+function monthEndLinesHtml(s){
+  var mp = s.mpNow;
+  return '<div class="money-lines">'+
+    mlRow("", "На руках", s.hand)+
+    mlRow("+", "Ждём постоянные доходы", mp.planRecurIn - mp.gotRecurIn)+
+    mlRow("−", "Не оплачено платежей", mp.planRecurOut - mp.paidRecurOut)+
+    mlRow("−", "Вернуть долги", mp.planDebt)+
+    mlRow("−", "Отложить в цели", Math.max(0, mp.planGoal - mp.factGoal))+
+    mlRow("−", "Остаток плана по статьям", mp.restCats, "бюджет, а без него — среднее за 3 месяца")+
+    mlRow("=", "К концу " + monthLabelGen(currentPeriod()), s.monthEnd)+
+  '</div>';
+}
+function flowLinesHtml(s, dir){
+  var f = s.rangeFlow;
+  if(dir==="in") return '<div class="money-lines">'+
+    mlRow("+", "Доходы", f.income)+ mlRow("+", "Постоянные доходы", f.recIn)+
+    mlRow("+", "Взял в долг", f.borrowed)+ mlRow("+", "Вернули долг", f.debtIn)+
+    mlRow("=", "Пришло · " + s.range.datesLabel, f.in)+'</div>';
+  return '<div class="money-lines">'+
+    mlRow("−", "Траты по статьям", f.expense)+ mlRow("−", "Платежи и кредиты", f.recOut)+
+    mlRow("−", "Отложено в цели", f.goal)+ mlRow("−", "Дал в долг", f.lent)+
+    mlRow("−", "Вернул долг", f.debtOut)+
+    mlRow("=", "Ушло · " + s.range.datesLabel, f.out)+'</div>';
+}
+// Плитки до переделки остатка. Не удалены, а спрятаны: вернуть любую можно в «Плитках».
+var LEGACY_TILES = ["cash","todayLife","today","daily","income","expense","balance","planIncome","planExpense",
+                    "planLeft","lend","owe","goals","subs","fixedIncome","credit","save"];
 var TILE_DEFS = [
+  { id:"hand", label:"На руках", calc:function(s){
+      return { value: fmtMoney(s.hand),
+               sub: "начало " + fmtMoney(s.handOpening.value) + " · " +
+                    sumParts([["пришло", s.handFlow.in], ["ушло", s.handFlow.out]], " · ", "движения не было"),
+               tone: s.hand>=0 ? "good" : "bad" };
+    }, detail: handLinesHtml, check: true,
+    hint:"Сколько денег должно быть у вас сейчас — наличные и карты вместе. Начало месяца плюс всё, что пришло, минус всё, что ушло. Деньги в целях сюда не входят. Начало месяца переносится само с конца прошлого; указать его вручную можно во вкладке «План месяца». Если реальная сумма другая — нажмите «Сверить»: разница запишется поправкой, записи не изменятся." },
+  { id:"free", label:"Свободно", calc:function(s){
+      return { value: fmtMoney(s.free), sub: horizonLabel(s) + " · " + s.freeDays + " " + pluralize(s.freeDays,"день","дня","дней"),
+               tone: s.free>=0 ? "good" : "bad" };
+    }, detail: freeLinesHtml,
+    hint:"Сколько из денег на руках можно тратить на жизнь до следующего поступления. Из «На руках» вычтено всё, что придётся отдать до этого дня: платежи и кредиты, долги, откладывание в цели и остаток плана по обязательным статьям. Следующее поступление — ближайший постоянный доход, ещё не отмеченный «Пришло»; если его нет — считаю до конца месяца." },
+  { id:"perDay", label:"Можно в день", calc:function(s){
+      if(s.perDayStart<=0) return { value:"0 ₸", tone:"bad", sub:"денег до поступления не хватает" };
+      return { value: fmtMoney(s.perDayStart),
+               sub: s.leftToday>=0 ? ("сегодня осталось " + fmtMoney(s.leftToday)) : ("сегодня сверх на " + fmtMoney(-s.leftToday)),
+               tone: s.leftToday<0 ? "bad" : "" };
+    }, detail: freeLinesHtml,
+    hint:"«Свободно», поделённое на дни до поступления, считая сегодняшний. Траты на жизнь за сегодня добавлены обратно, поэтому норма не прыгает в течение дня. Ниже — сколько из неё осталось на сегодня. Обязательные статьи в норму не входят: их остаток уже вычтен из «Свободно»." },
+  { id:"mustPay", label:"Ещё отдать", tone:"bad", calc:function(s){
+      var n = s.must.items.length;
+      return { value: fmtMoney(s.must.total),
+               sub: horizonLabel(s) + (n ? " · " + n + " " + pluralize(n,"пункт","пункта","пунктов") : " · ничего") };
+    }, detail: mustLinesHtml,
+    hint:"Что придётся отдать до следующего поступления: неоплаченные платежи и кредиты (и просроченные), мои долги к возврату, недоотложенное в цели за этот месяц и остаток плана по обязательным статьям. Платёж в день поступления сюда не входит — его закроют пришедшие деньги." },
+  { id:"nextIn", label:"Следующее поступление", tone:"good", calc:function(s){
+      if(!s.next) return { value:"—", sub:"постоянных доходов не ждём" };
+      var d = daysUntil(s.next.date);
+      return { value: fmtMoney(s.next.amount),
+               sub: s.next.name + " · " + (d===0 ? "сегодня" : shortDate(s.next.date) + ", через " + d + " " + pluralize(d,"день","дня","дней")) };
+    },
+    hint:"Ближайший постоянный доход, который ещё не отмечен «Пришло». До этого дня считаются «Свободно» и «Можно в день». Пришли деньги — отметьте их во вкладке «Платежи» или «План месяца», и расчёт сдвинется к следующему поступлению." },
+  { id:"monthEnd", label:"К концу месяца", calc:function(s){
+      return { value: fmtMoney(s.monthEnd), sub: "если всё пойдёт по плану", tone: s.monthEnd>=0 ? "good" : "bad" };
+    }, detail: monthEndLinesHtml,
+    hint:"Сколько останется в последний день месяца: на руках плюс ещё ожидаемые постоянные доходы минус неоплаченные платежи, долги к возврату, откладывание в цели и то, что осталось по плану статей. Перерасход по статье здесь уже учтён — он сидит в «На руках»." },
+  { id:"flowIn", label:"Пришло", tone:"good", calc:function(s){
+      return { value: fmtMoney(s.rangeFlow.in),
+               sub: sumParts([["доходы", s.rangeFlow.income + s.rangeFlow.recIn], ["в долг", s.rangeFlow.borrowed],
+                              ["вернули", s.rangeFlow.debtIn]], " · ", s.range.datesLabel) };
+    }, detail: function(s){ return flowLinesHtml(s, "in"); },
+    hint:"Все деньги, что пришли за выбранный период: доходы, постоянные доходы, взятое в долг и возвращённое вам. Период выбирается чипами над табло." },
+  { id:"flowOut", label:"Ушло", calc:function(s){
+      return { value: fmtMoney(s.rangeFlow.out),
+               sub: sumParts([["траты", s.rangeFlow.expense], ["платежи", s.rangeFlow.recOut], ["цели", s.rangeFlow.goal],
+                              ["долги", s.rangeFlow.lent + s.rangeFlow.debtOut]], " · ", s.range.datesLabel) };
+    }, detail: function(s){ return flowLinesHtml(s, "out"); },
+    hint:"Все деньги, что ушли за выбранный период: траты, оплаченные платежи и кредиты, взносы в цели, выданное в долг и возвращённые долги." },
   { id:"cash", label:"Остаток на руках", calc:function(s){
       return { value: fmtMoney(s.cash),
                sub: (s.cashOpening ? ("начало " + fmtMoney(s.cashOpening) + " · ") : "без остатка на начало · ") +
@@ -3618,7 +3955,7 @@ function tilesCfg(){
   var saved = pendingTiles;
   if(!saved){
     var d = state.uiSettings.find(function(x){ return x.id==="dashTiles"; });
-    if(d) saved = { order: d.order || [], hidden: d.hidden || [] };
+    if(d) saved = { order: d.order || [], hidden: d.hidden || [], v: d.v || 1 };
   }
   var known = {};
   TILE_DEFS.forEach(function(t){ known[t.id] = true; });
@@ -3634,12 +3971,15 @@ function tilesCfg(){
     at++;
   });
   var hidden = ((saved && saved.hidden) || []).filter(function(id){ return known[id]; });
+  // Настройка, сохранённая до плиток «На руках» / «Свободно» (v<2), и пустая база:
+  // прежние плитки прячем, но не удаляем — их можно вернуть в «Плитках»
+  if(!saved || !(saved.v >= 2)) LEGACY_TILES.forEach(function(id){ if(hidden.indexOf(id) < 0) hidden.push(id); });
   return { order: order, hidden: hidden };
 }
 function saveTilesCfg(cfg){
-  pendingTiles = { order: cfg.order.slice(), hidden: cfg.hidden.slice() };
+  pendingTiles = { order: cfg.order.slice(), hidden: cfg.hidden.slice(), v: 2 };
   if(db) db.collection("uiSettings").doc("dashTiles").set({
-    order: pendingTiles.order, hidden: pendingTiles.hidden, updatedAt: new Date().toISOString()
+    order: pendingTiles.order, hidden: pendingTiles.hidden, v: 2, updatedAt: new Date().toISOString()
   }).catch(function(){ toast("Настройку плиток не удалось сохранить в облако"); });
   renderAll();
 }
@@ -3677,10 +4017,67 @@ function openTileHintModal(id, s){
       '<div class="tl-value mono">'+escapeHtml(r.value==null ? "—" : r.value)+'</div>'+
       '<div class="tl-sub">'+escapeHtml(r.sub || "—")+'</div>'+
     '</div>'+
+    (def.detail ? def.detail(s) : '')+
     '<div class="note-box">'+escapeHtml(def.hint || "")+'</div>'+
-    '<div class="modal-actions"><button class="btn btn-primary" id="tileHintClose">Понятно</button></div>',
+    '<div class="modal-actions">'+
+      (def.check ? '<button class="btn btn-ghost" id="tileHintCheck">Сверить</button>' : '')+
+      '<button class="btn btn-primary" id="tileHintClose">Понятно</button></div>',
     function(veil){
       veil.querySelector("#tileHintClose").addEventListener("click", function(){ closeModal(veil); });
+      var chk = veil.querySelector("#tileHintCheck");
+      // Сверка открывается поверх пояснения, а не вместо него: закрыть и сразу открыть модалку
+      // в одном обработчике — это history.back() вперемешку с pushState, после чего
+      // следующее закрытие уводило со страницы. Пояснение закрываем потом, отдельным шагом.
+      function closeLater(){ setTimeout(function(){ closeModal(veil); }, 250); }
+      if(chk) chk.addEventListener("click", function(){ openCashCheckModal(s.hand, closeLater); });
+      veil.querySelectorAll("[data-delcheck]").forEach(function(b){
+        b.addEventListener("click", function(){
+          var id = b.getAttribute("data-delcheck");
+          confirmModal("Убрать поправку?", "Остаток на руках снова будет считаться только по записям.", "Убрать", function(){
+            if(db) db.collection("cashChecks").doc(id).delete();
+            closeLater();
+          });
+        });
+      });
+    }
+  );
+}
+/* Сверка: сколько денег на самом деле. Записи не трогаем — разница ложится поправкой
+   в cashChecks и дальше переносится в следующие месяцы вместе с остатком. */
+function openCashCheckModal(expected, onDone){
+  openModal(
+    '<div class="modal-head"><span class="modal-title">Сверить остаток</span></div>'+
+    '<div class="field"><label>Сколько денег у вас сейчас — наличные и карты, без денег в целях</label>'+
+    '<input type="number" id="ccInput" inputmode="decimal" placeholder="0"></div>'+
+    '<div class="note-box" id="ccNote">По записям должно быть <b>'+fmtMoney(expected)+'</b>.</div>'+
+    '<div class="modal-actions"><button class="btn btn-primary" id="ccSave">Сохранить</button></div>',
+    function(veil){
+      var inp = veil.querySelector("#ccInput"), note = veil.querySelector("#ccNote");
+      inp.focus();
+      inp.addEventListener("input", function(){
+        var v = parseFloat(inp.value);
+        if(isNaN(v)){ note.innerHTML = 'По записям должно быть <b>'+fmtMoney(expected)+'</b>.'; return; }
+        var diff = v - expected;
+        note.innerHTML = 'По записям <b>'+fmtMoney(expected)+'</b>. ' + (Math.round(diff)===0 ? "Всё сходится."
+          : (diff < 0 ? ("Не записано трат на <b>"+fmtMoney(-diff)+"</b> — это станет поправкой.")
+                      : ("Денег больше, чем по записям, на <b>"+fmtMoney(diff)+"</b> — это станет поправкой.")));
+      });
+      veil.querySelector("#ccSave").addEventListener("click", function(){
+        var v = parseFloat(inp.value);
+        if(isNaN(v)){ toast("Введите сумму"); return; }
+        var diff = Math.round(v - expected);
+        if(diff===0){ closeModal(veil); if(onDone) onDone(); toast("Всё сходится"); return; }
+        if(!db){ toast("Нет соединения"); return; }
+        db.collection("cashChecks").add({ date: todayStr(), expected: expected, actual: v, diff: diff,
+                                          addedBy: state.me||"", createdAt: new Date().toISOString() })
+          .then(function(ref){
+            closeModal(veil);
+            if(onDone) onDone();
+            toast("Поправка " + (diff<0 ? "−" : "+") + fmtMoney(Math.abs(diff)) + " учтена", function(){
+              db.collection("cashChecks").doc(ref.id).delete();
+            });
+          }).catch(function(){ toast("Не удалось сохранить сверку"); });
+      });
     }
   );
 }
@@ -3690,7 +4087,7 @@ function openTilesCfgModal(){
     '<div class="note-box">Стрелки меняют порядок, метка справа прячет плитку или возвращает её.</div>'+
     '<div class="tile-cfg" id="tileCfgList"></div>'+
     '<div class="modal-actions">'+
-      '<button class="btn btn-ghost" id="tileCfgReset">Вернуть как было</button>'+
+      '<button class="btn btn-ghost" id="tileCfgReset">По умолчанию</button>'+
       '<button class="btn btn-primary" id="tileCfgClose">Готово</button>'+
     '</div>',
     function(veil){
@@ -3738,7 +4135,7 @@ function openTilesCfgModal(){
       }
       draw();
       veil.querySelector("#tileCfgReset").addEventListener("click", function(){
-        saveTilesCfg({ order: TILE_DEFS.map(function(t){ return t.id; }), hidden: [] });
+        saveTilesCfg({ order: TILE_DEFS.map(function(t){ return t.id; }), hidden: LEGACY_TILES.slice() });
         draw();
       });
       veil.querySelector("#tileCfgClose").addEventListener("click", function(){ closeModal(veil); });
@@ -3819,8 +4216,8 @@ function dashStats(rg){
   var mpNow = monthPlanSummary(currentPeriod());
   s.cash = mpNow.now;                 // то же число, что «Остаток на руках» в «Плане месяца»
   s.cashOpening = mpNow.opening;
-  s.cashIn = mpNow.factIncome + mpNow.gotRecurIn + mpNow.factOwe;
-  s.cashOut = mpNow.factExpense + mpNow.paidRecurOut + mpNow.factGoal + mpNow.factLend;
+  s.cashIn = mpNow.flow.in;
+  s.cashOut = mpNow.flow.out;
   s.daysLeft = daysInPeriod(currentPeriod()) - new Date().getDate() + 1;
   // дневная норма — только по необязательным статьям: обязательное спишется само
   s.remainingBudget = mpNow.planCatsLife - mpNow.factPlannedLife;   // минус здесь и есть перерасход
@@ -3843,6 +4240,23 @@ function dashStats(rg){
     + todayRec.filter(function(x){ return x.rec.kind!=="income"; })
       .reduce(function(a,x){ return a + x.amount; }, 0);
   s.todaySpent = s.todayLife + s.todayMust;
+
+  // деньги: на руках, что ещё отдать до поступления, свободно и норма на день
+  s.hand = mpNow.now;
+  s.handOpening = openingInfo(currentPeriod());
+  s.handFlow = mpNow.flow;
+  s.mpNow = mpNow;
+  s.monthEnd = mpNow.left;
+  s.next = nextInflow();
+  var horizon = s.next ? s.next.date : addMonths(currentPeriod(), 1) + "-01";
+  s.must = mustPayUntil(horizon);
+  s.free = s.hand - s.must.total;
+  s.freeDays = Math.max(1, daysUntil(horizon));
+  // норма считается от денег на утро: сегодняшние траты на жизнь возвращаем обратно,
+  // иначе каждая покупка уменьшала бы и норму, и остаток на сегодня одновременно
+  s.perDayStart = Math.max(0, (s.free + s.todayLife) / s.freeDays);
+  s.leftToday = s.perDayStart - s.todayLife;
+  s.rangeFlow = cashFlowRange(rg.from, rg.to);
 
   var fixedIncome = state.recurring.filter(function(r){ return r.kind==="income" && r.active!==false; });
   s.fixedCount = fixedIncome.length;
@@ -4537,18 +4951,35 @@ function openQuickButtonModal(existing){
 document.getElementById("planMonth").addEventListener("change", renderPlan);
 document.getElementById("planOpeningBtn").addEventListener("click", function(){
   var period = document.getElementById("planMonth").value || currentPeriod();
+  var oi = openingInfo(period);
+  var manual = manualOpening(period);
+  // что выйдет без ручной суммы: перенос с прошлого месяца
+  var carried = openingInfo(addMonths(period, -1)).value + monthFlow(addMonths(period, -1)).net;
+  var hasPrev = oi.source!=="none" || manual!==null;
   openModal(
     '<div class="modal-head"><span class="modal-title">Остаток на начало месяца</span></div>'+
-    '<div class="field"><label>Сколько денег было на руках и на счетах 1-го числа ('+monthLabel(period)+')</label>'+
-    '<input type="number" id="obInput" value="'+(openingBalance(period)||"")+'" placeholder="0"></div>'+
-    '<div class="note-box">От этой суммы считается «Остаток на руках» и «Планируемый остаток».</div>'+
-    '<div class="modal-actions"><button class="btn btn-primary" id="obSave">Сохранить</button></div>',
+    '<div class="field"><label>Сколько денег было 1-го числа ('+monthLabel(period)+') — наличные и карты, без денег в целях</label>'+
+    '<input type="number" id="obInput" value="'+(manual!==null ? manual : "")+'" placeholder="'+Math.round(oi.value)+'"></div>'+
+    '<div class="note-box">Указать нужно один раз: дальше начало месяца переносится само с конца прошлого. '+
+      'Сейчас: <b>'+fmtMoney(oi.value)+'</b>, '+escapeHtml(openingSourceLabel(oi, period))+'.'+
+      (manual!==null && hasPrev ? ' Перенос с прошлого месяца дал бы <b>'+fmtMoney(carried)+'</b>.' : '')+'</div>'+
+    '<div class="modal-actions">'+
+      (manual!==null ? '<button class="btn btn-ghost" id="obAuto">Считать автоматически</button>' : '')+
+      '<button class="btn btn-primary" id="obSave">Сохранить</button></div>',
     function(veil){
       var inp = veil.querySelector("#obInput"); inp.focus();
       veil.querySelector("#obSave").addEventListener("click", function(){
         if(!db){ toast("Нет соединения"); return; }
-        db.collection("monthPlans").doc(period).set({ openingBalance: parseFloat(inp.value)||0, period:period })
+        if(inp.value===""){ toast("Введите сумму"); return; }
+        db.collection("monthPlans").doc(period).set({ openingBalance: parseFloat(inp.value)||0, period:period, auto:false })
           .then(function(){ toast("Сохранено"); closeModal(veil); });
+      });
+      var au = veil.querySelector("#obAuto");
+      // ручная сумма остаётся в документе, только перестаёт действовать — её можно вернуть
+      if(au) au.addEventListener("click", function(){
+        if(!db){ toast("Нет соединения"); return; }
+        db.collection("monthPlans").doc(period).update({ auto:true })
+          .then(function(){ toast("Остаток переносится с прошлого месяца"); closeModal(veil); });
       });
     }
   );
@@ -4583,13 +5014,16 @@ function renderPlan(){
   var s = monthPlanSummary(period);
   document.getElementById("planMonthLabel").textContent = monthLabel(period);
 
+  var oi = openingInfo(period);
   document.getElementById("planOpening").textContent = fmtMoney(s.opening);
-  document.getElementById("planOpeningBtn").textContent = s.opening ? "Изменить" : "Указать";
+  document.getElementById("planOpeningSrc").textContent = openingSourceLabel(oi, period);
+  document.getElementById("planOpeningBtn").textContent = oi.source==="none" ? "Указать" : "Изменить";
 
   document.getElementById("planNow").textContent = fmtMoney(s.now);
-  document.getElementById("planNowSub").textContent = "пришло " + fmtMoney(s.factIncome + s.gotRecurIn + s.factOwe) +
-    " · ушло " + fmtMoney(s.factExpense + s.paidRecurOut + s.factLend) +
-    (s.factGoal>0 ? (" · отложено в цели " + fmtMoney(s.factGoal)) : "");
+  document.getElementById("planNowSub").textContent = "пришло " + fmtMoney(s.flow.in) +
+    " · ушло " + fmtMoney(s.flow.out - s.flow.goal) +
+    (s.flow.goal>0 ? (" · отложено в цели " + fmtMoney(s.flow.goal)) : "") +
+    (Math.round(s.flow.corr) ? (" · сверка " + fmtMoney(s.flow.corr)) : "");
   document.getElementById("planNowCard").classList.toggle("good", s.now>=0);
   document.getElementById("planNowCard").classList.toggle("bad", s.now<0);
 

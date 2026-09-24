@@ -271,10 +271,11 @@ async function launchBrowser() {
     return (await page.locator(".example-chip").count()) === 0;
   });
 
-  // плитки плана: доход, расход и остаток
-  await check("плитки плана есть на табло", async () => {
+  // табло по умолчанию — новые плитки денег, прежние спрятаны, но не удалены
+  await check("новые плитки на табло, прежние скрыты", async () => {
     const ids = await page.evaluate(() => [...document.querySelectorAll("#dashTiles .tile")].map((e) => e.dataset.tile));
-    return ["planIncome", "planExpense", "planLeft"].every((id) => ids.includes(id));
+    const fresh = ["hand", "free", "perDay", "mustPay", "nextIn", "monthEnd", "flowIn", "flowOut"];
+    return fresh.every((id) => ids.includes(id)) && !ids.includes("cash") && !ids.includes("planLeft");
   });
 
   // период табло переключается чипами
@@ -302,13 +303,18 @@ async function launchBrowser() {
   await check("плитку можно скрыть и переставить", async () => {
     const before = await page.locator("#dashTiles .tile").count();
     await page.click("#tilesCfgBtn"); await page.waitForTimeout(250);
-    await page.locator('#tileCfgList [data-toggle="subs"]').click(); await page.waitForTimeout(300);
-    await page.locator('#tileCfgList [data-up="save"]').click(); await page.waitForTimeout(300);
+    await page.locator('#tileCfgList [data-toggle="nextIn"]').click(); await page.waitForTimeout(300);
+    await page.locator('#tileCfgList [data-up="flowIn"]').click(); await page.waitForTimeout(300);
     const order = await page.evaluate(() => [...document.querySelectorAll("#tileCfgList .row-title")].map((e) => e.textContent));
+    await page.locator('#tileCfgList [data-toggle="nextIn"]').click(); await page.waitForTimeout(300);
+    for (const id of ["todayLife", "today"]) {
+      await page.locator('#tileCfgList [data-toggle="' + id + '"]').click(); await page.waitForTimeout(300);
+    }
     await page.click("#tileCfgClose"); await page.waitForTimeout(300);
     const ids = await page.evaluate(() => [...document.querySelectorAll("#dashTiles .tile")].map((e) => e.dataset.tile));
-    return ids.length === before - 1 && !ids.includes("subs")
-      && order.indexOf("Откладывать в месяц") < order.indexOf("Остаток по кредитам");
+    // скрытая и снова показанная «Следующее поступление» + две вернувшиеся прежние плитки
+    return ids.length === before + 2 && ids.includes("nextIn") && ids.includes("todayLife")
+      && order.indexOf("Пришло") < order.indexOf("К концу месяца");
   });
 
   // статью можно завести прямо в разборе фразы, не выходя из списка
@@ -420,8 +426,44 @@ async function launchBrowser() {
     await go("plan", 300);
     const plan = clean(await page.locator("#planNow").textContent()).trim();
     await go("dashboard", 300);
-    const tile = clean(await page.locator('#dashTiles [data-tile="cash"] .tl-value').textContent()).trim();
+    const tile = clean(await page.locator('#dashTiles [data-tile="hand"] .tl-value').textContent()).trim();
     return plan === tile && plan !== "0 ₸";
+  });
+
+  // свободно — это на руках минус всё, что отдать до поступления
+  await check("свободно = на руках − ещё отдать", async () => {
+    await go("dashboard", 250);
+    return (await tileNum("hand")) - (await tileNum("mustPay")) === (await tileNum("free"));
+  });
+
+  // остаток на начало следующего месяца переносится сам, руками его не вводили
+  await check("начало месяца переносится с прошлого", async () => {
+    await go("plan", 250);
+    const now = clean(await page.locator("#planNow").textContent()).trim();
+    const month = await page.locator("#planMonth").inputValue();
+    const [y, m] = month.split("-").map(Number);
+    const next = new Date(y, m, 1);
+    await page.fill("#planMonth", next.getFullYear() + "-" + String(next.getMonth() + 1).padStart(2, "0"));
+    await page.dispatchEvent("#planMonth", "change"); await page.waitForTimeout(300);
+    const opening = clean(await page.locator("#planOpening").textContent()).trim();
+    const src = clean(await page.locator("#planOpeningSrc").textContent());
+    await page.fill("#planMonth", month);
+    await page.dispatchEvent("#planMonth", "change"); await page.waitForTimeout(300);
+    return opening === now && src.includes("перенесено");
+  });
+
+  // сверка: реальная сумма меньше — разница ложится поправкой, записи не меняются
+  await check("сверка остатка даёт поправку", async () => {
+    await go("dashboard", 250);
+    const hand0 = await tileNum("hand");
+    const entries0 = await page.evaluate(() => Object.keys(window.__store.entries || {}).length);
+    await page.click('#dashTiles [data-tile="hand"]'); await page.waitForTimeout(250);
+    await page.click("#tileHintCheck"); await page.waitForTimeout(250);
+    await page.fill("#ccInput", String(hand0 - 3000));
+    await page.click("#ccSave"); await page.waitForTimeout(700);
+    const hand1 = await tileNum("hand");
+    const entries1 = await page.evaluate(() => Object.keys(window.__store.entries || {}).length);
+    return hand1 === hand0 - 3000 && entries1 === entries0;
   });
 
   // обязательная статья («Связь и интернет» помечена при засеве) не попадает в «Траты сегодня»
@@ -454,11 +496,12 @@ async function launchBrowser() {
   // нажатие на плитку объясняет, откуда взялось число
   await check("плитка объясняет себя по нажатию", async () => {
     await go("dashboard", 250);
-    await page.click('#dashTiles [data-tile="cash"]'); await page.waitForTimeout(250);
+    await page.click('#dashTiles [data-tile="hand"]'); await page.waitForTimeout(250);
     const title = await page.locator(".modal-veil.show .modal-title").last().textContent();
     const note = await page.locator(".modal-veil.show .note-box").last().textContent();
+    const lines = await page.locator(".modal-veil.show .money-lines .ml-row").count();
     await page.click("#tileHintClose"); await page.waitForTimeout(250);
-    return title.trim() === "Остаток на руках" && note.includes("на начало месяца");
+    return title.trim() === "На руках" && note.includes("Начало месяца") && lines >= 3;
   });
 
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");

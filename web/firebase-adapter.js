@@ -9,6 +9,10 @@
   var ALLOWED = (window.FINANCE_ALLOWED_EMAILS || []).map(function (e) {
     return String(e).toLowerCase();
   });
+  // Владелец работает с корневыми коллекциями — там его данные лежали с самого начала.
+  // У остальных допущенных своё пространство spaces/<почта>/…: свои записи, платежи,
+  // долги, цели и статьи. Чужого не видно — это закрывают и правила web/firestore.rules.
+  var OWNER = String(window.FINANCE_OWNER_EMAIL || ALLOWED[0] || "").toLowerCase();
 
   // Приложение ждёт этот промис в initDb(). Резолвим его один раз — после входа.
   var resolveDb = null;
@@ -105,8 +109,23 @@
         signOut: function () { auth.signOut().then(function () { location.reload(); }); }
       };
       hideScreen();
-      if (!resolved) { resolved = true; resolveDb(firebase.firestore()); }
+      if (!resolved) { resolved = true; resolveDb(dbFor(email)); }
     });
+  }
+
+  // Приложение знает только db.collection(имя) и db.doc("коллекция/id") — их и подменяем,
+  // чтобы у второго человека всё легло в его пространство без правок index.html.
+  function dbFor(email) {
+    var fs = firebase.firestore();
+    if (!OWNER || email === OWNER) return fs;
+    var root = fs.collection("spaces").doc(email);
+    return {
+      collection: function (name) { return root.collection(name); },
+      doc: function (path) {
+        var parts = String(path).split("/");
+        return root.collection(parts[0]).doc(parts.slice(1).join("/"));
+      }
+    };
   }
 
   function showSignIn(auth) {

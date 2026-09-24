@@ -1,27 +1,41 @@
-// Правила доступа к базе. Скопировать в Firebase → Firestore Database → Rules → Publish.
+// Правила доступа к базе. Публикуются командой `npm run deploy`.
 //
-// Без них база по умолчанию либо закрыта совсем, либо (в тестовом режиме) открыта всем,
-// кто знает адрес приложения. Список почт здесь — единственное, что реально закрывает
-// данные: ключи в config.js публичны и ничего не защищают.
+// Список почт здесь — единственное, что реально закрывает данные: ключи в config.js
+// публичны и ничего не защищают. Тот же список должен стоять в web/config.js
+// (FINANCE_ALLOWED_EMAILS) — там он нужен, чтобы чужой аккаунт увидел понятное
+// «нет доступа», а не ошибку базы.
 //
-// Тот же список должен стоять в web/config.js (FINANCE_ALLOWED_EMAILS) — там он нужен,
-// чтобы чужой аккаунт увидел понятное «нет доступа», а не ошибку базы.
+// Данные раздельные. Владелец (FINANCE_OWNER_EMAIL) работает с корневыми коллекциями,
+// каждый другой допущенный — только со своим spaces/<почта>/…. Друг друга они не видят:
+// владельцу закрыта папка spaces, остальным — всё, кроме своей папки.
 
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function allowed() {
-      return request.auth != null
-        && request.auth.token.email_verified == true
-        && request.auth.token.email.lower() in [
-             'anuarbekyt@gmail.com'
-           ];
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function me() {
+      return request.auth.token.email.lower();
+    }
+    function isOwner() {
+      return signedIn() && me() == 'anuarbekyt@gmail.com';
+    }
+    // допущенные со своим пространством (владельца сюда не добавлять)
+    function isMember() {
+      return signedIn() && me() in [
+        // 'почта-супруги@gmail.com'
+      ];
     }
 
-    match /{document=**} {
-      allow read, write: if allowed();
+    match /spaces/{email}/{document=**} {
+      allow read, write: if isMember() && me() == email;
+    }
+
+    match /{coll}/{document=**} {
+      allow read, write: if isOwner() && coll != 'spaces';
     }
   }
 }

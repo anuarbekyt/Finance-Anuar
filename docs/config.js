@@ -15,3 +15,7 @@ window.FINANCE_FIREBASE_CONFIG = {
 // Кого пускать в приложение. Тот же список стоит в web/firestore.rules — здесь он
 // только чтобы чужой аккаунт увидел понятное «нет доступа», а не ошибку базы.
 window.FINANCE_ALLOWED_EMAILS = ["anuarbekyt@gmail.com"];
+
+// Владелец: его данные — корневые коллекции базы, как было с самого начала. Остальные
+// из списка выше получают своё пространство spaces/<почта> и видят только его.
+window.FINANCE_OWNER_EMAIL = "anuarbekyt@gmail.com";
