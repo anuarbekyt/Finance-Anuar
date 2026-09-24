@@ -92,7 +92,13 @@ npm run deploy  # пересборка docs/ и выкладка
 не пускает). Пока в `web/config.js` пустой `FINANCE_AI.recaptchaKey`, ИИ выключен
 и фразы разбираются правилами приложения.
 
-Настройка — один раз, делает владелец аккаунта:
+**Сделано 25.09.2026:** AI Logic включён (Gemini Developer API), ключ reCAPTCHA
+Enterprise «Финансы» (`6Le1WM0t…`, домены `finance-anuar.web.app` и
+`finance-anuar.firebaseapp.com`) создан, зарегистрирован в App Check и вписан
+в `web/config.js`; App Check для AI Logic (`firebaseml.googleapis.com`) — Enforced.
+Запрос без токена App Check получает 401.
+
+Настройка с нуля (для другого проекта) — один раз, делает владелец аккаунта:
 
 1. [Firebase → AI Logic](https://console.firebase.google.com/project/finance-anuar/ailogic/)
    → **Get started** → **Gemini Developer API** (бесплатный уровень, карта не нужна).

@@ -148,7 +148,11 @@ Claude, на обычном хостинге — `web/firebase-adapter.js`: он
 работает. Модульный SDK (`firebasejs/12.19.0`, ES-модули через `import()`) поднимается
 отдельным экземпляром приложения `finance-ai`: ИИ есть только в модульном SDK, а база
 и вход — в compat. `financeAI` появляется, только если в `web/config.js` задан
-`FINANCE_AI.recaptchaKey`; настройка консоли — `web/README.md`, «Разбор фраз ИИ».
+`FINANCE_AI.recaptchaKey` (задан; ключ зарегистрирован в App Check, для AI Logic —
+сервис `firebaseml.googleapis.com` — App Check в режиме Enforced, без токена ответ 401).
+Модель — `FINANCE_AI.model`, сейчас `gemini-3.5-flash-lite`: отвечает за 1–2 с,
+`gemini-3.8-flash` на тех же фразах думал до 20 с. Настройка консоли — `web/README.md`,
+«Разбор фраз ИИ».
 Значок reCAPTCHA спрятан в обёртке `dev/build-web.js`, текст о защите — в `accountBlockHtml`.
 
 Сообщения об ошибках хранилища в `index.html` не должны упоминать Claude или
