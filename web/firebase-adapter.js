@@ -156,7 +156,7 @@
         });
         var ai = m[2].getAI(app, { backend: new m[2].GoogleAIBackend() });
         return m[2].getGenerativeModel(ai, {
-          model: AI.model || "gemini-3.8-flash",
+          model: AI.model || "gemini-3.5-flash-lite",
           generationConfig: { responseMimeType: "application/json" }
         });
       });

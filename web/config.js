@@ -24,4 +24,4 @@ window.FINANCE_OWNER_EMAIL = "anuarbekyt@gmail.com";
 // Разбор надиктованных фраз ИИ (Gemini через Firebase AI Logic). recaptchaKey — открытый
 // ключ сайта reCAPTCHA Enterprise для App Check, он не секретный. Пусто — ИИ выключен,
 // фразы разбираются правилами приложения. Настройка — web/README.md, «Разбор фраз ИИ».
-window.FINANCE_AI = { recaptchaKey: "", model: "gemini-3.8-flash" };
+window.FINANCE_AI = { recaptchaKey: "", model: "gemini-3.5-flash-lite" };
