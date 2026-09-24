@@ -121,7 +121,7 @@ Claude, на обычном хостинге — `web/firebase-adapter.js`: он
 | Файл | Зачем |
 |---|---|
 | `dev/build-web.js` | собирает `docs/`: документ целиком, манифест, service worker, иконки |
-| `web/firebase-adapter.js` | `window.claude.use("db")` → Firestore, вход через Google, `window.financeAuth` |
+| `web/firebase-adapter.js` | `window.claude.use("db")` → Firestore, вход через Google, `window.financeAuth`, `window.financeAI` |
 | `web/config.example.js` | образец `web/config.js` — настройки Firebase и список допущенных почт |
 | `web/firestore.rules` | правила доступа; **единственное**, что закрывает данные |
 | `firebase.json` / `.firebaserc` | что выкладывать (`docs/`) и куда (проект `finance-anuar`) |
@@ -141,6 +141,15 @@ Claude, на обычном хостинге — `web/firebase-adapter.js`: он
 со своими статьями. В правилах: владелец — всё, кроме `spaces`; остальные — только
 `spaces/<своя почта>`. Почта владельца стоит в двух местах: `FINANCE_OWNER_EMAIL`
 в `web/config.js` и `isOwner()` в правилах.
+
+**Разбор фраз ИИ.** `setupAI()` в адаптере заводит `window.financeAI.json(prompt)` →
+разобранный JSON: Gemini через Firebase AI Logic, ключа Gemini в коде нет. Запросы
+подтверждает App Check с reCAPTCHA Enterprise — с 2 ноября 2026 без него AI Logic не
+работает. Модульный SDK (`firebasejs/12.19.0`, ES-модули через `import()`) поднимается
+отдельным экземпляром приложения `finance-ai`: ИИ есть только в модульном SDK, а база
+и вход — в compat. `financeAI` появляется, только если в `web/config.js` задан
+`FINANCE_AI.recaptchaKey`; настройка консоли — `web/README.md`, «Разбор фраз ИИ».
+Значок reCAPTCHA спрятан в обёртке `dev/build-web.js`, текст о защите — в `accountBlockHtml`.
 
 Сообщения об ошибках хранилища в `index.html` не должны упоминать Claude или
 артефакт: один и тот же файл работает на обоих площадках.
@@ -298,6 +307,13 @@ Claude, на обычном хостинге — `web/firebase-adapter.js`: он
 - `overdueRecurringList()` / `overdueDebtsList()` — просроченное одним правилом: по ним
   и баннер на дашборде, и бейджи на вкладках (`renderTabBadges`). Считать просрочку
   где-то ещё отдельно — значит развести числа.
+- `runQuickParse()` — кнопка «Разобрать». Есть `window.financeAI` — фраза уходит ИИ
+  (`aiParseEntries` → `aiEntriesPrompt` с датой, статьями и именами из долгов →
+  `aiItemsFrom`, которая проверяет тип, сумму и даты и сводит статью к заведённой через
+  `findCategory`; незнакомая статья идёт в список как новая) и результат всегда
+  показывается `openBatchModal(items, {title, note})` на проверку. Нет ИИ, он не ответил
+  за `AI_TIMEOUT_MS` или суммы не нашёл — `ruleQuickParse(raw)`, прежний разбор правилами.
+  Текст в поле стирается только после удачного разбора, чтобы сказанное не терялось.
 - `parseQuickEntry(text)` — разбор фразы с диктовки: сумма (цифрами, с пробелами в тысячах,
   словами — «пять тысяч»), срок «до 10 сентября», статья «статья сигареты», направление долга
   («мне должен» / «я должен»). Диктовка на телефоне искажает слова, поэтому разбор нарочно
@@ -414,6 +430,7 @@ Claude, на обычном хостинге — `web/firebase-adapter.js`: он
   5 секунд вместо 2,6. Так отменяются добавленные записи, повтор и удаление быстрой кнопки.
 - `accountBlockHtml()` — блок «Аккаунт» в настройках. Рисуется, только если есть
   `window.financeAuth` (его заводит адаптер веб-сборки): в артефакте выхода нет.
+  При включённом ИИ под ним текст о reCAPTCHA — обязателен, раз значок спрятан.
 - `applyTheme(t)` / `setTheme(t)` — тема `dark` | `light` | `auto`, кнопка 🌗 в шапке.
   Тёмная стоит первой и она же значение по умолчанию: иначе телефон со светлой
   системной темой открывал бы светлый вид. Текущее значение держится в `themeMode`,

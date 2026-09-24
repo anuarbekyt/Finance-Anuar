@@ -83,6 +83,31 @@ npm run deploy  # пересборка docs/ и выкладка
 Правила и есть единственное, что закрывает данные. Ключи Firebase в `docs/config.js`
 публичны по устройству самого Firebase и ничего не защищают.
 
+## Разбор фраз ИИ
+
+Надиктованную фразу разбирает Gemini через Firebase AI Logic: сумма, статья из ваших,
+дата («вчера»), долги с именем и сроком. Результат всегда показывается списком на
+проверку. Ключа Gemini в коде нет — его держит Firebase; App Check с reCAPTCHA Enterprise
+подтверждает, что запрос идёт с нашего сайта (с 2 ноября 2026 Firebase без этого ИИ
+не пускает). Пока в `web/config.js` пустой `FINANCE_AI.recaptchaKey`, ИИ выключен
+и фразы разбираются правилами приложения.
+
+Настройка — один раз, делает владелец аккаунта:
+
+1. [Firebase → AI Logic](https://console.firebase.google.com/project/finance-anuar/ailogic/)
+   → **Get started** → **Gemini Developer API** (бесплатный уровень, карта не нужна).
+2. [Google Cloud → reCAPTCHA](https://console.cloud.google.com/security/recaptcha?project=finance-anuar)
+   → **Create key**: тип — веб-сайт, домены `finance-anuar.web.app` и
+   `finance-anuar.firebaseapp.com`, галочку **Use checkbox challenge** не ставить.
+   Скопировать ID ключа (начинается с `6L`). Он не секретный.
+3. [Firebase → App Check](https://console.firebase.google.com/project/finance-anuar/appcheck)
+   → **Apps** → веб-приложение → **reCAPTCHA Enterprise** → вставить ключ → **Save**.
+   Затем **APIs** → **Firebase AI Logic** → **Enforce**, если мастер из шага 1 не включил сам.
+4. Вписать ключ в `web/config.js` → `FINANCE_AI.recaptchaKey` и `npm run deploy`.
+
+Модель задаётся там же (`FINANCE_AI.model`). Значок reCAPTCHA на странице спрятан
+(налезал на нижнюю панель) — вместо него текст о защите в «Настройках → Аккаунт».
+
 ## Если что-то не работает
 
 | Что видно | В чём дело |

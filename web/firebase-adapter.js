@@ -109,6 +109,7 @@
         signOut: function () { auth.signOut().then(function () { location.reload(); }); }
       };
       hideScreen();
+      setupAI();
       if (!resolved) { resolved = true; resolveDb(dbFor(email)); }
     });
   }
@@ -126,6 +127,50 @@
         return root.collection(parts[0]).doc(parts.slice(1).join("/"));
       }
     };
+  }
+
+  /* ---------- разбор фраз ИИ ----------
+     Gemini через Firebase AI Logic. Ключа Gemini в коде нет — его держит Firebase,
+     а App Check (reCAPTCHA Enterprise) подтверждает, что запрос идёт с этого сайта.
+     Пока в config.js нет FINANCE_AI.recaptchaKey, window.financeAI не появляется
+     и приложение разбирает фразы своими правилами. */
+  var SDK_ESM = "https://www.gstatic.com/firebasejs/12.19.0/";
+  function setupAI() {
+    var AI = window.FINANCE_AI || {};
+    if (!AI.recaptchaKey || window.financeAI) return;
+    var model = null;
+    function getModel() {
+      if (model) return model;
+      model = Promise.all([
+        import(SDK_ESM + "firebase-app.js"),
+        import(SDK_ESM + "firebase-app-check.js"),
+        import(SDK_ESM + "firebase-ai.js")
+      ]).then(function (m) {
+        // Отдельный экземпляр приложения: ИИ есть только в модульном SDK,
+        // а база и вход живут в compat — смешивать их в одном экземпляре нельзя.
+        var app;
+        try { app = m[0].getApp("finance-ai"); } catch (e) { app = m[0].initializeApp(CFG, "finance-ai"); }
+        m[1].initializeAppCheck(app, {
+          provider: new m[1].ReCaptchaEnterpriseProvider(AI.recaptchaKey),
+          isTokenAutoRefreshEnabled: true
+        });
+        var ai = m[2].getAI(app, { backend: new m[2].GoogleAIBackend() });
+        return m[2].getGenerativeModel(ai, {
+          model: AI.model || "gemini-3.8-flash",
+          generationConfig: { responseMimeType: "application/json" }
+        });
+      });
+      model.catch(function () { model = null; });   // не загрузилось — попробуем при следующей фразе
+      return model;
+    }
+    window.financeAI = {
+      json: function (prompt) {
+        return getModel()
+          .then(function (gm) { return gm.generateContent(prompt); })
+          .then(function (res) { return JSON.parse(res.response.text()); });
+      }
+    };
+    getModel();   // reCAPTCHA и SDK грузятся заранее, чтобы первая фраза не ждала
   }
 
   function showSignIn(auth) {

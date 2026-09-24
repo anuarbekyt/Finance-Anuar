@@ -54,7 +54,10 @@ const head =
   '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">\n' +
   // те же сбросы, что добавляет обёртка артефакта: без них не работает [hidden]
   "<style>body{margin:0;padding:0}img{max-width:100%}" +
-  "[hidden]:not([hidden=until-found]){display:none!important}</style>\n" +
+  "[hidden]:not([hidden=until-found]){display:none!important}" +
+  // значок reCAPTCHA (App Check для ИИ) налезал на нижнюю панель; вместо него —
+  // текст о защите в настройках, как требуют правила Google
+  ".grecaptcha-badge{visibility:hidden}</style>\n" +
   "</head>\n<body>\n";
 
 const boot =

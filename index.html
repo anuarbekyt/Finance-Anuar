@@ -1802,10 +1802,17 @@ function splitQuickPhrases(raw){
 }
 
 var BATCH_TYPES = [["expense","Расход"],["income","Доход"],["lend","Мне должны"],["owe","Я должен"]];
+// подпись под строкой пачки: дата, если не сегодня, срок возврата долга и заметка
+function batchMeta(it){
+  return [ (it.date && it.date!==todayStr()) ? shortDate(it.date) : "",
+           it.dueDate ? ("вернуть до " + shortDate(it.dueDate)) : "",
+           it.note || "" ].filter(function(x){ return !!x; }).join(" · ");
+}
 function batchIcon(t){ return t==="income" ? "💰" : (t==="lend" ? "🤝" : (t==="owe" ? "📄" : "💸")); }
 // Предпросмотр разобранной пачки: тип, статья (или имя) и сумма правятся прямо в списке,
 // лишняя строка убирается крестиком. Сохраняются все строки разом, с общей отменой.
-function openBatchModal(items){
+function openBatchModal(items, opts){
+  opts = opts || {};
   function rowsHtml(){
     return items.map(function(it, i){
       var main;
@@ -1826,13 +1833,13 @@ function openBatchModal(items){
         main+
         '<input type="number" class="b-amt" data-amount="'+i+'" value="'+(it.amount||"")+'" placeholder="Сумма">'+
         '<button class="row-act" data-drop="'+i+'" title="Убрать строку">\u2715</button>'+
-        (it.note ? '<div class="batch-note">'+escapeHtml(it.note)+'</div>' : '')+
+        (batchMeta(it) ? '<div class="batch-note">'+escapeHtml(batchMeta(it))+'</div>' : '')+
       '</div>';
     }).join("");
   }
   var html =
-    '<div class="modal-head"><span class="modal-title">В одной фразе несколько записей</span></div>'+
-    '<div class="note-box">Проверьте статьи и суммы — сохранятся все строки сразу.</div>'+
+    '<div class="modal-head"><span class="modal-title">'+escapeHtml(opts.title || "В одной фразе несколько записей")+'</span></div>'+
+    '<div class="note-box">'+escapeHtml(opts.note || "Проверьте статьи и суммы — сохранятся все строки сразу.")+'</div>'+
     '<div id="batchRows"></div>'+
     '<div class="modal-actions">'+
       '<button class="btn btn-ghost" id="batchCancel">Отмена</button>'+
@@ -2061,7 +2068,12 @@ function accountBlockHtml(){
     '<div class="row"><div class="row-main">'+
       '<div class="row-title">'+escapeHtml(a.email || "вход выполнен")+'</div>'+
       '<div class="row-sub">через этот аккаунт данные видны на всех устройствах</div>'+
-    '</div><button class="btn btn-ghost btn-sm" id="signOutBtn">Выйти</button></div>';
+    '</div><button class="btn btn-ghost btn-sm" id="signOutBtn">Выйти</button></div>'+
+    // значок reCAPTCHA спрятан (налезал на нижнюю панель) — по правилам Google тогда
+    // о защите надо сказать текстом
+    (window.financeAI ? '<div class="note-box">Фразы разбирает Gemini. Сайт защищён reCAPTCHA; действуют '+
+      '<a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Политика конфиденциальности</a> и '+
+      '<a href="https://policies.google.com/terms" target="_blank" rel="noopener">Условия использования</a> Google.</div>' : '');
 }
 function openSettingsModal(){
   openModal(
@@ -2601,8 +2613,29 @@ document.getElementById("tilesCfgBtn").addEventListener("click", openTilesCfgMod
 })();
 
 function runQuickParse(){
-  var raw = document.getElementById("quickInput").value;
+  var input = document.getElementById("quickInput");
+  var raw = input.value;
   if(!raw.trim()) return;
+  // Есть ИИ (веб-сборка, web/firebase-adapter.js) — фразу разбирает он, а результат всегда
+  // показывается списком на проверку. Нет его или он не ответил — разбор правилами.
+  if(window.financeAI && navigator.onLine !== false){
+    var btn = document.getElementById("quickParseBtn");
+    if(btn.disabled) return;
+    btn.disabled = true; btn.textContent = "Разбираю…";
+    aiParseEntries(raw).then(function(items){
+      if(!items.length){ toast("Суммы во фразе не нашлось — разобрал правилами"); ruleQuickParse(raw); return; }
+      input.value = "";
+      openBatchModal(items, { title: items.length > 1 ? "Проверьте записи" : "Проверьте запись",
+                              note: "Разобрано ИИ. Поправьте, если что-то не так, — сохранится по кнопке." });
+    }, function(){
+      toast("ИИ не ответил — разобрал правилами");
+      ruleQuickParse(raw);
+    }).then(function(){ btn.disabled = false; btn.textContent = "Разобрать"; });
+    return;
+  }
+  ruleQuickParse(raw);
+}
+function ruleQuickParse(raw){
   var parts = splitQuickPhrases(raw);
   document.getElementById("quickInput").value = "";
   if(parts.length > 1){
@@ -2610,6 +2643,83 @@ function runQuickParse(){
     return;
   }
   openEntryModal(parseQuickEntry(raw), null);
+}
+
+/* ---------- разбор фразы ИИ ----------
+   Модель получает фразу, сегодняшнюю дату и заведённые статьи и возвращает JSON со списком
+   записей. Ответу не доверяем вслепую: тип и даты проверяются, статья сводится к заведённой
+   через findCategory, а незнакомая становится «новой статьёй», которую видно в списке. */
+var WEEKDAYS_RU = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
+function aiEntriesPrompt(text){
+  function names(kind){
+    return state.categories.filter(function(c){ return (c.kind||"expense")===kind; })
+      .map(function(c){ return c.name; }).join("; ");
+  }
+  var people = {};
+  state.entries.forEach(function(e){ if((e.type==="lend"||e.type==="owe") && e.person) people[e.person] = true; });
+  var t = todayStr();
+  return [
+    "Ты разбираешь надиктованную с телефона фразу для учёта личных финансов. Валюта — тенге.",
+    "Распознавание речи искажает слова и окончания — восстанавливай смысл, а не буквы.",
+    "Сегодня " + t + ", " + WEEKDAYS_RU[new Date(t + "T00:00:00").getDay()] + ".",
+    "Статьи расходов: " + (names("expense") || "нет") + ".",
+    "Статьи доходов: " + (names("income") || "нет") + ".",
+    "Люди из прошлых долгов: " + (Object.keys(people).join("; ") || "нет") + ".",
+    "",
+    'Верни JSON вида {"entries":[{"type":"expense","amount":5000,"category":"","person":"","note":"","date":"YYYY-MM-DD","dueDate":""}]}.',
+    "Правила:",
+    "- Во фразе может быть несколько записей — каждая отдельным элементом.",
+    "- type: expense — потратил; income — получил доход; lend — дал в долг, мне должны; owe — взял в долг, я должен.",
+    "- amount — число в тенге: «пять тысяч» = 5000, «10к» = 10000, «полтора миллиона» = 1500000.",
+    "- category — только для expense и income: самая подходящая статья из списка, написанная ровно как в списке. Новое короткое название с большой буквы — только если ни одна статья по смыслу не подходит.",
+    "- person — только для lend и owe: имя в именительном падеже; если человек есть среди прошлых долгов — как там.",
+    "- note — коротко, за что или где (магазин, заведение), без суммы и названия статьи; можно пустую строку.",
+    "- date — день операции: по умолчанию сегодня; «вчера», «в понедельник» переводи в дату, не позже сегодня.",
+    "- dueDate — срок возврата долга, если назван, иначе пустая строка.",
+    "- Без суммы запись не создавай. Ничего не выдумывай.",
+    "",
+    "Фраза: «" + text + "»"
+  ].join("\n");
+}
+function aiDate(v){
+  var d = String(v||"").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d + "T00:00:00").getTime()) ? d : "";
+}
+function aiItemsFrom(json){
+  var list = (json && Array.isArray(json.entries)) ? json.entries : (Array.isArray(json) ? json : []);
+  return list.map(function(x){
+    x = x || {};
+    var type = ["expense","income","lend","owe"].indexOf(x.type) >= 0 ? x.type : "expense";
+    var amount = Number(String(x.amount==null ? "" : x.amount).replace(/[^\d.,]/g, "").replace(",", "."));
+    var date = aiDate(x.date);
+    // дата дальше года от сегодня — почти наверняка ошибка распознавания
+    if(!date || Math.abs(daysUntil(date)) > 366) date = todayStr();
+    var it = { type:type, amount: isFinite(amount) ? Math.round(amount*100)/100 : 0,
+               note: capitalize(String(x.note||"").trim()), date: date,
+               dueDate: aiDate(x.dueDate), person:"", category:"" };
+    if(type==="lend" || type==="owe"){
+      it.person = capitalize(String(x.person||"").trim());
+      if(!it.person){ it.person = it.note; it.note = ""; }
+    } else {
+      var raw = String(x.category||"").trim();
+      var known = raw ? findCategory(raw, type) : null;
+      if(known) it.category = known.name;
+      else if(raw){ it.category = capitalize(raw); it.newCat = true; }
+      else it.category = guessCategory(it.note, type);
+      if(it.note && it.category && catKey(it.note)===catKey(it.category)) it.note = "";
+    }
+    return it;
+  }).filter(function(it){ return it.amount > 0; });
+}
+var AI_TIMEOUT_MS = 20000;
+function aiParseEntries(text){
+  return new Promise(function(resolve, reject){
+    var timer = setTimeout(function(){ reject(new Error("timeout")); }, AI_TIMEOUT_MS);
+    window.financeAI.json(aiEntriesPrompt(text)).then(function(json){
+      clearTimeout(timer);
+      try{ resolve(aiItemsFrom(json)); }catch(e){ reject(e); }
+    }, function(err){ clearTimeout(timer); reject(err); });
+  });
 }
 
 document.querySelectorAll("[data-newdebt]").forEach(function(b){

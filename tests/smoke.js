@@ -504,6 +504,41 @@ async function launchBrowser() {
     return title.trim() === "На руках" && note.includes("Начало месяца") && lines >= 3;
   });
 
+  // ИИ разбирает фразу: ответ модели подменён, проверяем, что список на проверку собран
+  // правильно — статья сведена к заведённой, долг с именем, запись без суммы отброшена
+  await check("ИИ разбирает фразу в список на проверку", async () => {
+    await go("dashboard", 200);
+    await page.evaluate(() => {
+      window.financeAI = { json: async (prompt) => {
+        window.__aiPrompt = prompt;
+        return { entries: [
+          { type: "expense", amount: "3 500", category: "транспорт", note: "такси", date: "" },
+          { type: "owe", amount: 20000, person: "Серик", dueDate: "2026-12-01" },
+          { type: "expense", amount: 0, category: "Продукты" }
+        ] };
+      } };
+    });
+    await page.fill("#quickInput", "такси три пятьсот и взял у Серика двадцать тысяч до первого декабря");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(400);
+    const rows = await page.locator(".batch-row").count();
+    const cat = await page.locator('[data-cat="0"]').inputValue();
+    const person = await page.locator('[data-person="1"]').inputValue();
+    const prompt = await page.evaluate(() => window.__aiPrompt || "");
+    await page.keyboard.press("Escape"); await page.waitForTimeout(250);
+    return rows === 2 && cat === "Транспорт" && person === "Серик" && prompt.includes("Статьи расходов");
+  });
+
+  // ИИ не ответил — фраза не теряется, её разбирают правила приложения
+  await check("ИИ не ответил — разбор правилами", async () => {
+    await page.evaluate(() => { window.financeAI = { json: () => Promise.reject(new Error("offline")) }; });
+    await page.fill("#quickInput", "такси 1500");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(400);
+    const val = await page.locator("#fCategorySel").inputValue();
+    await page.keyboard.press("Escape"); await page.waitForTimeout(250);
+    await page.evaluate(() => { delete window.financeAI; });
+    return val === "Транспорт";
+  });
+
   // пауза платежа убирает его из плана, но оплаченное уже не отменяет — остаток не меняется
   await check("пауза не отменяет оплаченное", async () => {
     await go("dashboard", 250);
