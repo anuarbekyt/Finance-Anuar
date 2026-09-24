@@ -1321,6 +1321,16 @@ var queueTimer = null;
 // Очередь живёт в памяти, localStorage — только чтобы пережить перезагрузку страницы.
 // В приватном окне хранилище бросает исключение, и на нём одном очередь бы терялась.
 var queueList = null;
+// Чья запись: очередь общая на устройство, а войти на нём могут разные люди.
+// Запись уходит только в базу того, кто её сделал; старые записи без метки — в текущую.
+function queueAcct(){
+  var a = window.financeAuth;
+  return (a && a.email) ? String(a.email).toLowerCase() : "";
+}
+function queueMine(){
+  var me = queueAcct();
+  return queueAll().filter(function(x){ return !x.__acct || x.__acct===me; });
+}
 function queueAll(){
   if(queueList) return queueList;
   try{
@@ -1337,6 +1347,7 @@ function queueSave(){
 function queuePush(payload){
   var item = Object.assign({}, payload);
   item.__qid = uid();
+  item.__acct = queueAcct();
   queueAll().push(item);
   queueSave();
   scheduleQueueFlush();
@@ -1346,7 +1357,7 @@ function queueDrop(qid){
   queueList = queueAll().filter(function(x){ return x.__qid !== qid; });
   queueSave();
 }
-function queueCount(){ return queueAll().length; }
+function queueCount(){ return queueMine().length; }
 function renderQueue(){
   var n = queueCount();
   var chip = document.getElementById("queueChip");
@@ -1363,11 +1374,12 @@ function renderQueue(){
   }
 }
 function flushQueue(){
-  var list = queueAll();
+  var list = queueMine();
   if(!list.length || !db) return;
   var item = list[0];
   var payload = Object.assign({}, item);
   delete payload.__qid;
+  delete payload.__acct;
   db.collection("entries").add(payload).then(function(){
     queueDrop(item.__qid);
     if(queueCount()) flushQueue();
@@ -1409,6 +1421,13 @@ function undoAdd(res, silent){
 // Без этого на Android «назад» уводил со страницы вместо закрытия формы.
 var modalStack = [];
 var popGuard = 0;
+// Модалки, открытые, пока наш history.back() ещё не отработал (закрыли одну и сразу открыли
+// другую). pushState в этот момент ломал историю: следующее закрытие уводило со страницы.
+// Такие модалки получают свой шаг истории, когда back() дойдёт до popstate.
+var pushWaiting = [];
+function pushModalState(veil){
+  try{ history.pushState({ gbModal:true }, ""); veil.__gbPushed = true; }catch(e){}
+}
 function openModal(html, onMount){
   var root = document.getElementById("modalRoot");
   var veil = document.createElement("div");
@@ -1418,7 +1437,7 @@ function openModal(html, onMount){
   veil.addEventListener("mousedown", function(e){ if(e.target===veil) closeModal(veil); });
   requestAnimationFrame(function(){ veil.classList.add("show"); });
   modalStack.push(veil);
-  try{ history.pushState({ gbModal:true }, ""); veil.__gbPushed = true; }catch(e){}
+  if(popGuard > 0) pushWaiting.push(veil); else pushModalState(veil);
   if(onMount) onMount(veil);
   return veil;
 }
@@ -1430,6 +1449,8 @@ function dropModal(veil){
 }
 function closeModal(veil){
   if(modalStack.indexOf(veil) < 0) return;
+  var w = pushWaiting.indexOf(veil);
+  if(w >= 0) pushWaiting.splice(w, 1);        // шага истории у неё ещё нет — отматывать нечего
   var pushed = !!veil.__gbPushed;
   dropModal(veil);
   if(pushed){
@@ -1438,7 +1459,14 @@ function closeModal(veil){
   }
 }
 window.addEventListener("popstate", function(){
-  if(popGuard>0){ popGuard--; return; }          // шаг истории отмотали мы сами
+  if(popGuard>0){                                // шаг истории отмотали мы сами
+    popGuard--;
+    if(popGuard===0){
+      var waiting = pushWaiting; pushWaiting = [];
+      waiting.forEach(function(v){ if(modalStack.indexOf(v) >= 0) pushModalState(v); });
+    }
+    return;
+  }
   if(modalStack.length) dropModal(modalStack[modalStack.length-1]);
 });
 document.addEventListener("keydown", function(e){
@@ -2931,6 +2959,12 @@ function creditPaidCount(r){
 function recActiveIn(r, period){
   if(r.active===false) return false;
   if(r.startPeriod && period < r.startPeriod) return false;   // платёж сдвинут вперёд
+  return recFallsIn(r, period);
+}
+// приходится ли платёж на этот месяц по самой своей природе: кредит — по графику,
+// годовой — в свой месяц. Пауза и сдвиг «с какого месяца учитывать» сюда не входят:
+// они убирают платёж из плана, но уже оплаченное в прошлом не отменяют.
+function recFallsIn(r, period){
   if(r.kind==="credit") return creditPeriods(r).indexOf(period) >= 0;
   var cyc = r.cycle || "monthly";
   if(cyc==="yearly") return (r.dueMonth||1) === parseInt(period.split("-")[1],10);
@@ -2946,11 +2980,14 @@ function recIsPaid(r, period){
 }
 /* оплаченные регулярные за месяц: у годовых ключ отметки — год, поэтому идти надо
    от списка платежей, а не фильтровать отметки по «YYYY-MM». Заодно отсекаются
-   отметки удалённых платежей, которые иначе навсегда оставались бы расходом. */
+   отметки удалённых платежей, которые иначе навсегда оставались бы расходом.
+   Пауза и «Сдвинуть →» оплаченное не отменяют (recFallsIn, а не recActiveIn): иначе
+   подписка, поставленная на паузу, задним числом меняла бы отчёты прошлых месяцев
+   и перенесённый остаток на руках. */
 function paidRecurringIn(period){
   var out = [];
   state.recurring.forEach(function(r){
-    if(!recActiveIn(r, period)) return;
+    if(!recFallsIn(r, period)) return;
     var key = recPeriodKey(r, period);
     var p = state.recurringPayments.find(function(x){ return x.recurringId===r.id && x.period===key; });
     if(!p || !p.paid) return;
@@ -3730,9 +3767,10 @@ var TILE_DEFS = [
     }, hint:"Во сколько обойдётся месяц целиком: платежи и кредиты + план по статьям (бюджет, а если он не задан — среднее за три месяца) + откладывание в цели + долги, которые надо вернуть в этом месяце. Если по статье уже потрачено больше плана, в расчёт идёт факт." },
   { id:"planLeft", label:"Планируемый остаток", calc:function(s){
       return { value: fmtMoney(s.planLeft),
-               sub: (s.opening ? ("начало " + fmtMoney(s.opening) + " + доход − расход") : "доход − расход") + s.planNote,
+               sub: (s.planLeftOneMonth ? "на руках + ждём − ещё отдать"
+                     : (s.opening ? ("начало " + fmtMoney(s.opening) + " + доход − расход") : "доход − расход")) + s.planNote,
                tone: s.planLeft>=0 ? "good" : "bad" };
-    }, hint:"Сколько останется к концу месяца, если всё пойдёт по плану: остаток на начало месяца плюс планируемый доход минус планируемый расход. В отличие от «Остатка на руках» здесь учтено и то, что ещё только предстоит потратить." },
+    }, hint:"Сколько останется к концу месяца, если всё пойдёт по плану: деньги на руках плюс ещё ожидаемые постоянные доходы минус всё, что ещё предстоит отдать, — платежи, долги, цели и остаток плана по статьям. То же число, что «К концу месяца». Если выбран период из нескольких месяцев — начало первого месяца плюс плановый доход минус плановый расход за все месяцы." },
   { id:"lend", label:"Мне должны", tone:"good", calc:function(s){
       return { value: fmtMoney(s.totalLend),
                sub: s.openLend + " " + pluralize(s.openLend,"незакрытый долг","незакрытых долга","незакрытых долгов") };
@@ -4011,8 +4049,10 @@ function dashStats(rg){
 
   s.planRecurIn = 0; s.planRecurOut = 0; s.planFactIncome = 0; s.planCats = 0;
   s.planGoal = 0; s.planDebt = 0; s.planIncome = 0; s.planExpense = 0;
+  var lastMp = null;
   rg.months.forEach(function(p){
     var mp = monthPlanSummary(p);
+    lastMp = mp;
     s.planRecurIn += mp.planRecurIn;
     s.planRecurOut += mp.planRecurOut;
     s.planFactIncome += mp.factIncome;
@@ -4023,7 +4063,11 @@ function dashStats(rg){
     s.planExpense += mp.planExpense;
   });
   s.opening = openingBalance(rg.months[0]);
-  s.planLeft = s.opening + s.planIncome - s.planExpense;
+  // один месяц — то же число, что «К концу месяца» и «Планируемый остаток» в «Плане месяца»:
+  // оно учитывает долги и сверку. Старая формула «начало + доход − расход» их не видела
+  // и расходилась с планом. Для нескольких месяцев другого способа сложить план нет.
+  s.planLeftOneMonth = rg.months.length===1;
+  s.planLeft = s.planLeftOneMonth ? lastMp.left : s.opening + s.planIncome - s.planExpense;
   // план всегда месячный — для дня, недели и своего периода это надо сказать вслух
   s.planNote = (rg.mode==="month") ? "" : (" · план: " + monthsLabel(rg.months));
 

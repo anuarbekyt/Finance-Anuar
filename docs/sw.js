@@ -1,4 +1,4 @@
-var CACHE = 'finance-202609241536';
+var CACHE = 'finance-202609241633';
 var SHELL = ['./', './index.html', './config.js', './manifest.webmanifest',
              './icon-192.png', './icon-512.png', './icon-maskable.png'];
 

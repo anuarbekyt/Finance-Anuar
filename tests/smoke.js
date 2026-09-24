@@ -504,6 +504,44 @@ async function launchBrowser() {
     return title.trim() === "На руках" && note.includes("Начало месяца") && lines >= 3;
   });
 
+  // пауза платежа убирает его из плана, но оплаченное уже не отменяет — остаток не меняется
+  await check("пауза не отменяет оплаченное", async () => {
+    await go("dashboard", 250);
+    await page.evaluate(async () => {
+      const db = await window.claude.use("db");
+      const t = new Date();
+      const P = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0");
+      const day = P + "-" + String(t.getDate()).padStart(2, "0");
+      const ref = await db.collection("recurring").add({ kind: "subscription", name: "Пауза-тест", amount: 4000, dueDay: 1, cycle: "monthly" });
+      await db.collection("recurringPayments").doc(ref.id + "__" + P).set({ recurringId: ref.id, period: P, amount: 4000, paid: true, paidDate: day });
+      window.__pauseId = ref.id;
+    });
+    await page.waitForTimeout(300);
+    const h0 = await tileNum("hand");
+    await page.evaluate(async () => {
+      const db = await window.claude.use("db");
+      await db.collection("recurring").doc(window.__pauseId).update({ active: false });
+    });
+    await page.waitForTimeout(300);
+    return (await tileNum("hand")) === h0;
+  });
+
+  // модалка закрылась и сразу открылась другая («Закрыть и записать» у долга) — после
+  // сохранения страница должна остаться на месте, а не уйти назад по истории
+  await check("закрытие долга с записью не уводит со страницы", async () => {
+    await page.evaluate(async () => {
+      const db = await window.claude.use("db");
+      const t = new Date();
+      const day = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0");
+      await db.collection("entries").add({ type: "lend", amount: 8000, date: day, person: "Берик", status: "open" });
+    });
+    await go("debts", 300);
+    await page.locator("#lendList [data-close]").first().click(); await page.waitForTimeout(300);
+    await page.click("#cdBoth"); await page.waitForTimeout(400);
+    await page.click("#saveEntryBtn"); await page.waitForTimeout(900);
+    return page.url().startsWith("file:");
+  });
+
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");
   await browser.close();
   process.exit(errors.length ? 1 : 0);
