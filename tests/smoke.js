@@ -549,6 +549,46 @@ async function launchBrowser() {
     return saved && cats === 1;
   });
 
+  // помощник правит старую запись: фраза с Главной → чат с предложением → «Выполнить»
+  await check("помощник правит старую запись по команде", async () => {
+    await go("dashboard", 200);
+    await page.evaluate(() => {
+      const list = Object.entries(window.__store.entries || {}).filter(([, e]) => e.type === "expense");
+      window.__editId = list[list.length - 1][0];
+      window.financeAI = { json: async (prompt) => {
+        window.__aiPrompt = prompt;
+        return { reply: "Добавлю комментарий к последней трате.",
+                 actions: [{ op: "edit", id: window.__editId, changes: { note: "за бензин" } }] };
+      } };
+    });
+    await page.fill("#quickInput", "к последней трате добавь комментарий за бензин");
+    await page.click("#quickParseBtn"); await page.waitForTimeout(500);
+    const chatOpen = await page.locator(".chat-modal").count();
+    const planText = chatOpen ? await page.locator(".chat-plan").last().innerText() : "";
+    await page.locator("[data-plan-run]").last().click(); await page.waitForTimeout(500);
+    const note = await page.evaluate(() => window.__store.entries[window.__editId].note);
+    const idInPrompt = await page.evaluate(() => (window.__aiPrompt || "").includes(window.__editId));
+    return chatOpen === 1 && planText.includes("комментарий") && note === "За бензин" && idInPrompt;
+  });
+
+  // помощник помнит переписку: следующая фраза уходит модели вместе с предыдущими
+  await check("помощник помнит переписку", async () => {
+    await page.evaluate(() => {
+      window.financeAI = { json: async (prompt) => {
+        window.__aiPrompt = prompt;
+        return { reply: "Какую сумму поставить?", actions: [] };
+      } };
+    });
+    await page.fill("#chatInput", "а у неё поменяй сумму");
+    await page.click("#chatSend"); await page.waitForTimeout(500);
+    const prompt = await page.evaluate(() => window.__aiPrompt || "");
+    const last = await page.locator(".chat-msg.bot").last().innerText();
+    await page.click("#chatClose"); await page.waitForTimeout(300);
+    await page.evaluate(() => { delete window.financeAI; });
+    return prompt.includes("к последней трате добавь комментарий за бензин")
+      && prompt.includes("выполнено") && last.includes("Какую сумму");
+  });
+
   // ИИ не ответил — фраза не теряется, её разбирают правила приложения
   await check("ИИ не ответил — разбор правилами", async () => {
     await page.evaluate(() => { window.financeAI = { json: () => Promise.reject(new Error("offline")) }; });

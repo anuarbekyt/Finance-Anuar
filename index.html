@@ -253,10 +253,13 @@
      на телефоне запись почти всегда диктуется, и главная кнопка должна быть большой. */
   .quick-row{ display:grid; grid-template-columns:auto 1fr; gap:8px; align-items:stretch; }
   .quick-input-wrap{ grid-column:1 / -1; }
-  #quickMicBtn{ padding-left:14px; padding-right:14px; font-size:17px; }
+  #quickMicBtn, #quickChatBtn{ padding-left:14px; padding-right:14px; font-size:17px; }
+  /* с помощником (есть ИИ) под полем три кнопки: микрофон, чат и «Разобрать» */
+  .quick-row.has-chat{ grid-template-columns:auto auto 1fr; }
   /* на ноутбуке всё умещается в одну строку, растягивать «Разобрать» на всю ширину незачем */
   @media (min-width:760px){
     .quick-row{ grid-template-columns:1fr auto auto; align-items:end; }
+    .quick-row.has-chat{ grid-template-columns:1fr auto auto auto; }
     .quick-input-wrap{ grid-column:auto; }
   }
   .quick-label{
@@ -280,7 +283,7 @@
   .btn-primary{ background: var(--accent); color: var(--accent-ink); }
   .btn-primary:hover{ filter:brightness(1.08); }
   .btn-primary:disabled{ opacity:.45; cursor:not-allowed; }
-  #quickMicBtn.listening{ background:var(--bad-soft); border-color:var(--bad); color:var(--bad); animation:micpulse 1.1s ease-in-out infinite; }
+  #quickMicBtn.listening, .chat-mic.listening{ background:var(--bad-soft); border-color:var(--bad); color:var(--bad); animation:micpulse 1.1s ease-in-out infinite; }
   @keyframes micpulse{ 0%,100%{ opacity:1; } 50%{ opacity:.55; } }
   .btn-ghost{ background: transparent; border:1px solid var(--line); color:var(--ink); }
   .btn-ghost:hover{ border-color: var(--accent); color:var(--accent); }
@@ -659,6 +662,31 @@
   .batch-row select, .batch-row input{ width:100%; }
   .batch-note{ font-size:11.5px; color:var(--ink-mute); padding-left:34px; margin-top:5px; }
 
+  /* ---------- помощник: чат ----------
+     Переписка во всю высоту листа, строка ввода прижата вниз. Предложение помощника —
+     рамка внутри его сообщения: что будет сделано и кнопки «Выполнить / Изменить / Отмена». */
+  .modal.chat-modal{ display:flex; flex-direction:column; height:88vh; overflow:hidden; }
+  .chat-head-acts{ display:flex; gap:6px; align-items:center; }
+  .chat-log{ flex:1 1 auto; overflow-y:auto; display:flex; flex-direction:column; gap:8px; padding:2px 0 10px; }
+  .chat-msg{ max-width:88%; padding:9px 12px; border-radius:14px; font-size:14px; line-height:1.4;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  .chat-msg.me{ align-self:flex-end; background:var(--accent-soft); border:1px solid var(--accent); border-bottom-right-radius:4px; }
+  .chat-msg.bot{ align-self:flex-start; background:var(--well); border:1px solid var(--line); border-bottom-left-radius:4px; }
+  .chat-msg.wait{ color:var(--ink-mute); }
+  .chat-plan{ margin-top:8px; padding-top:8px; border-top:1px solid var(--line); white-space:normal; }
+  .chat-plan .cp-line{ font-size:13px; padding:2px 0; }
+  .chat-plan .cp-acts{ display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .chat-plan .cp-state{ font-size:12px; color:var(--ink-mute); margin-top:6px; }
+  .chat-plan .cp-state.done{ color:var(--good); }
+  .chat-form{ display:flex; gap:8px; align-items:flex-end; padding-top:10px; border-top:1px solid var(--line); }
+  .chat-form textarea{ flex:1 1 auto; min-width:0; min-height:44px; max-height:120px; resize:none;
+    border-radius:var(--radius-m); border:1px solid var(--line); background:var(--well); color:var(--ink);
+    padding:10px 12px; font:inherit; font-size:15px; line-height:1.4; }
+  .chat-form textarea:focus{ outline:none; border-color:var(--accent); }
+  .chat-form .btn{ padding-left:14px; padding-right:14px; font-size:17px; }
+  /* на телефоне поле 16px: на меньшем размере iPhone приближает страницу при фокусе */
+  @media (max-width:759px){ .chat-form textarea{ font-size:16px; } }
+
   /* ---------- очередь неотправленных записей ---------- */
   #queueChip{ display:flex; background:var(--warn-soft); border-color:var(--warn); color:var(--warn); }
   .queue-box{
@@ -731,9 +759,10 @@
       <div class="quick-label">Быстрая запись</div>
       <div class="quick-row">
         <div class="quick-input-wrap">
-          <textarea id="quickInput" placeholder="Продиктуйте или напечатайте трату"></textarea>
+          <textarea id="quickInput" placeholder="Продиктуйте трату или команду"></textarea>
         </div>
         <button class="btn btn-ghost" id="quickMicBtn" type="button" title="Голосовой ввод">🎤</button>
+        <button class="btn btn-ghost" id="quickChatBtn" type="button" title="Помощник: переписка и правки" hidden>💬</button>
         <button class="btn btn-primary" id="quickParseBtn">Разобрать</button>
       </div>
       <div class="qb-wrap">
@@ -1449,6 +1478,8 @@ function openModal(html, onMount){
 function dropModal(veil){
   var i = modalStack.indexOf(veil);
   if(i>=0) modalStack.splice(i,1);
+  // модалке есть что убрать за собой (микрофон чата помощника)
+  if(veil.__onClose){ var f = veil.__onClose; veil.__onClose = null; try{ f(); }catch(e){} }
   veil.classList.remove("show");
   setTimeout(function(){ veil.remove(); }, 180);
 }
@@ -1935,46 +1966,60 @@ function openBatchModal(items, opts){
     veil.querySelector("#batchCancel").addEventListener("click", function(){ closeModal(veil); });
     veil.querySelector("#batchSave").addEventListener("click", function(){
       collect();
-      for(var i=0;i<items.length;i++){
-        var it = items[i];
-        if(!it.amount || it.amount<=0){ toast("Строка "+(i+1)+": укажите сумму"); return; }
-        if((it.type==="expense"||it.type==="income") && !it.category){ toast("Строка "+(i+1)+": укажите статью"); return; }
-        if((it.type==="lend"||it.type==="owe") && !it.person){ toast("Строка "+(i+1)+": укажите имя"); return; }
-      }
-      // новую статью заводим один раз на имя: снимок базы придёт позже, дубли не нужны
-      var madeCats = {};
-      items.forEach(function(it){
-        if(it.type!=="expense" && it.type!=="income") return;
-        var k = it.type + "|" + catKey(it.category);
-        if(!madeCats[k]) madeCats[k] = ensureCategory(it.category, it.type).name;
-        it.category = madeCats[k];
-      });
-      var total = items.length, results = [], queuedCount = 0;
+      var err = parsedItemsError(items);
+      if(err){ toast(err); return; }
       closeModal(veil);
-      items.forEach(function(it){
-        var payload = { type:it.type, amount:Number(it.amount), date: it.date||todayStr(), note: it.note||"",
-                        category:"", person:"", dueDate:"", goalId:"", termMonths:0,
-                        receipt:"", receiptId:"", addedBy: state.me||"",
-                        createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() };
-        if(it.type==="expense" || it.type==="income") payload.category = it.category;
-        if(it.type==="lend" || it.type==="owe"){
-          payload.person = it.person;
-          payload.dueDate = it.dueDate||"";
-          payload.status = "open";
-        }
-        addEntry(payload, function(res){
-          results.push(res);
-          if(res.queued) queuedCount++;
-          if(results.length === total){
-            var msg = "Добавлено " + total + " " + pluralize(total,"запись","записи","записей");
-            if(queuedCount) msg += " · " + queuedCount + " в очереди, нет связи";
-            toast(msg, function(){
-              results.forEach(function(r){ undoAdd(r, true); });
-              toast("Отменено");
-            });
-          }
+      saveParsedItems(items, function(results, queuedCount){
+        var total = results.length;
+        var msg = "Добавлено " + total + " " + pluralize(total,"запись","записи","записей");
+        if(queuedCount) msg += " · " + queuedCount + " в очереди, нет связи";
+        toast(msg, function(){
+          results.forEach(function(r){ undoAdd(r, true); });
+          toast("Отменено");
         });
+        if(opts.onSaved) opts.onSaved(results);
       });
+    });
+  });
+}
+// чего не хватает в разобранных записях, чтобы их сохранить; пусто — всё на месте
+function parsedItemsError(items){
+  for(var i=0;i<items.length;i++){
+    var it = items[i], pre = items.length > 1 ? "Строка "+(i+1)+": " : "";
+    if(!it.amount || it.amount<=0) return pre + "укажите сумму";
+    if((it.type==="expense"||it.type==="income") && !it.category) return pre + "укажите статью";
+    if((it.type==="lend"||it.type==="owe") && !it.person) return pre + "укажите имя";
+  }
+  return "";
+}
+/* Сохранить разобранные записи (список проверки, помощник). Новую статью заводим один раз
+   на имя — снимок базы придёт позже, дубли не нужны. Всё через addEntry, поэтому без сети
+   записи уходят в очередь. done(results, queuedCount) — когда легли все. */
+function saveParsedItems(items, done){
+  var madeCats = {};
+  items.forEach(function(it){
+    if(it.type!=="expense" && it.type!=="income") return;
+    var k = it.type + "|" + catKey(it.category);
+    if(!madeCats[k]) madeCats[k] = ensureCategory(it.category, it.type).name;
+    it.category = madeCats[k];
+  });
+  var total = items.length, results = [], queuedCount = 0;
+  if(!total){ done([], 0); return; }
+  items.forEach(function(it){
+    var payload = { type:it.type, amount:Number(it.amount), date: it.date||todayStr(), note: it.note||"",
+                    category:"", person:"", dueDate:"", goalId:"", termMonths:0,
+                    receipt:"", receiptId:"", addedBy: state.me||"",
+                    createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() };
+    if(it.type==="expense" || it.type==="income") payload.category = it.category;
+    if(it.type==="lend" || it.type==="owe"){
+      payload.person = it.person;
+      payload.dueDate = it.dueDate||"";
+      payload.status = "open";
+    }
+    addEntry(payload, function(res){
+      results.push(res);
+      if(res.queued) queuedCount++;
+      if(results.length === total) done(results, queuedCount);
     });
   });
 }
@@ -2589,12 +2634,11 @@ document.getElementById("dashRange").addEventListener("click", function(e){
 document.getElementById("tilesCfgBtn").addEventListener("click", openTilesCfgModal);
 
 // голосовой ввод — доступен только в Chrome/Edge/Android WebView, поэтому фича
-// проверяется и при отсутствии API кнопка просто прячется
-(function(){
+// проверяется и при отсутствии API кнопка просто прячется. Одна функция на любое поле:
+// быстрая запись на Главной и строка чата помощника. Возвращает {stop} или null.
+function attachVoice(micBtn, input){
   var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  var micBtn = document.getElementById("quickMicBtn");
-  if(!SpeechRec || !micBtn){ if(micBtn) micBtn.style.display = "none"; return; }
-  var input = document.getElementById("quickInput");
+  if(!SpeechRec || !micBtn || !input){ if(micBtn) micBtn.style.display = "none"; return null; }
   var recognition = new SpeechRec();
   recognition.lang = "ru-RU";
   recognition.continuous = true;       // не обрывать запись после первой фразы
@@ -2641,23 +2685,41 @@ document.getElementById("tilesCfgBtn").addEventListener("click", openTilesCfgMod
       micBtn.classList.add("listening");
     }catch(e){ stopListening(); }
   });
-})();
+  // окно закрыли, пока микрофон слушал — иначе запись поднималась бы заново без конца
+  return { stop: function(){ if(listening){ listening = false; try{ recognition.stop(); }catch(e){} micBtn.classList.remove("listening"); } } };
+}
+attachVoice(document.getElementById("quickMicBtn"), document.getElementById("quickInput"));
+document.getElementById("quickChatBtn").addEventListener("click", openChatModal);
 
 function runQuickParse(){
   var input = document.getElementById("quickInput");
   var raw = input.value;
   if(!raw.trim()) return;
-  // Есть ИИ (веб-сборка, web/firebase-adapter.js) — фразу разбирает он, а результат всегда
-  // показывается списком на проверку. Нет его или он не ответил — разбор правилами.
+  // Есть ИИ (веб-сборка, web/firebase-adapter.js) — фразу разбирает помощник. Только новые
+  // записи — привычный список на проверку; правка старых или вопрос — чат помощника, где он
+  // пишет, что собирается сделать. Нет ИИ или он не ответил — разбор правилами.
   if(window.financeAI && navigator.onLine !== false){
     var btn = document.getElementById("quickParseBtn");
     if(btn.disabled) return;
     btn.disabled = true; btn.textContent = "Разбираю…";
-    aiParseEntries(raw).then(function(items){
-      if(!items.length){ toast("Суммы во фразе не нашлось — разобрал правилами"); ruleQuickParse(raw); return; }
+    assistantAsk(raw).then(function(res){
+      if(!res.edits.length && !res.adds.length && !res.reply){
+        toast("Суммы во фразе не нашлось — разобрал правилами"); ruleQuickParse(raw); return;
+      }
       input.value = "";
-      openBatchModal(items, { title: items.length > 1 ? "Проверьте записи" : "Проверьте запись",
-                              note: "Разобрано ИИ. Поправьте, если что-то не так, — сохранится по кнопке." });
+      if(!res.edits.length && res.adds.length){
+        var msg = chatRemember(raw, res);
+        msg.state = "review";
+        chatSave();
+        openBatchModal(res.adds.map(function(it){ return Object.assign({}, it); }), {
+          title: res.adds.length > 1 ? "Проверьте записи" : "Проверьте запись",
+          note: "Разобрано ИИ. Поправьте, если что-то не так, — сохранится по кнопке.",
+          onSaved: function(){ msg.state = "done"; chatSave(); }
+        });
+        return;
+      }
+      chatRemember(raw, res);
+      openChatModal();
     }, function(){
       toast("ИИ не ответил — разобрал правилами");
       ruleQuickParse(raw);
@@ -2676,42 +2738,72 @@ function ruleQuickParse(raw){
   openEntryModal(parseQuickEntry(raw), null);
 }
 
-/* ---------- разбор фразы ИИ ----------
-   Модель получает фразу, сегодняшнюю дату и заведённые статьи и возвращает JSON со списком
-   записей. Ответу не доверяем вслепую: тип и даты проверяются, статья сводится к заведённой
-   через findCategory, а незнакомая становится «новой статьёй», которую видно в списке. */
+/* ============ ПОМОЩНИК ============
+   Фраза уходит модели вместе с сегодняшней датой, статьями, последними записями (с id)
+   и перепиской. Ответ — JSON {reply, actions}: add — новая запись, edit — правка старой
+   по id. Ответу не доверяем вслепую: тип, суммы и даты проверяются (aiItemsFrom,
+   aiEditFrom), править можно только запись, которая реально есть, и только поля
+   amount / note / date / category / person / dueDate. Без «Выполнить» ничего не меняется. */
 var WEEKDAYS_RU = ["воскресенье","понедельник","вторник","среда","четверг","пятница","суббота"];
-function aiEntriesPrompt(text){
+var ASSIST_ENTRIES = 120;   // сколько последних записей видит помощник
+var ASSIST_HISTORY = 12;    // сколько сообщений переписки уходит в запрос
+function assistantPrompt(text){
   function names(kind){
     return state.categories.filter(function(c){ return (c.kind||"expense")===kind; })
       .map(function(c){ return c.name; }).join("; ");
   }
   var people = {};
   state.entries.forEach(function(e){ if((e.type==="lend"||e.type==="owe") && e.person) people[e.person] = true; });
+  var recent = state.entries.slice().sort(function(a,b){
+    return String(b.date||"").localeCompare(String(a.date||"")) ||
+           String(b.createdAt||"").localeCompare(String(a.createdAt||""));
+  }).slice(0, ASSIST_ENTRIES).map(function(e){
+    var who = (e.type==="lend" || e.type==="owe") ? (e.person||"") : (e.category||"");
+    return [e.id, e.date, e.type, e.amount, who, String(e.note||"").replace(/\s+/g, " ")].join(" | ");
+  });
+  var history = chatAll().slice(-ASSIST_HISTORY).map(function(m){
+    if(m.role==="me") return "Пользователь: " + m.text;
+    var s = "Помощник: " + (m.text||"");
+    if(m.plan) s += " [предложил: " + planLines(m.plan).join("; ") + " — " + (PLAN_STATE_RU[m.state] || "ждёт ответа") + "]";
+    return s;
+  });
   var t = todayStr();
   return [
-    "Ты разбираешь надиктованную с телефона фразу для учёта личных финансов. Валюта — тенге.",
-    "Распознавание речи искажает слова и окончания — восстанавливай смысл, а не буквы.",
+    "Ты — помощник в приложении учёта личных финансов. Валюта — тенге.",
+    "Пользователь диктует с телефона; распознавание речи искажает слова и окончания — восстанавливай смысл, а не буквы.",
     "Сегодня " + t + ", " + WEEKDAYS_RU[new Date(t + "T00:00:00").getDay()] + ".",
     "Статьи расходов: " + (names("expense") || "нет") + ".",
     "Статьи доходов: " + (names("income") || "нет") + ".",
-    "Люди из прошлых долгов: " + (Object.keys(people).join("; ") || "нет") + ".",
+    "Люди из долгов: " + (Object.keys(people).join("; ") || "нет") + ".",
+    "Последние записи, свежие сверху (id | дата | тип | сумма | статья или имя | комментарий):",
+    recent.length ? recent.join("\n") : "записей нет",
+    "Переписка до этого:",
+    history.length ? history.join("\n") : "нет",
     "",
-    'Верни JSON вида {"entries":[{"type":"expense","amount":5000,"category":"","person":"","note":"","date":"YYYY-MM-DD","dueDate":""}]}.',
-    "Правила:",
-    "- Во фразе может быть несколько записей — каждая отдельным элементом.",
+    'Верни JSON {"reply":"…","actions":[…]}. Действия:',
+    '- {"op":"add","entry":{"type":"expense","amount":5000,"category":"","person":"","note":"","date":"YYYY-MM-DD","dueDate":""}} — новая запись.',
+    '- {"op":"edit","id":"id записи из списка","changes":{…}} — правка существующей записи; в changes только меняющиеся поля из amount, note, category, date, person, dueDate.',
+    "Новые записи:",
+    "- Во фразе может быть несколько записей — по действию на каждую.",
     "- type: expense — потратил; income — получил доход; lend — дал в долг, мне должны; owe — взял в долг, я должен.",
     "- amount — число в тенге: «пять тысяч» = 5000, «10к» = 10000, «полтора миллиона» = 1500000.",
     "- category — только для expense и income: самая подходящая статья из списка, написанная ровно как в списке. Новое короткое название с большой буквы — только если ни одна статья по смыслу не подходит.",
-    "- person — только для lend и owe: имя в именительном падеже; если человек есть среди прошлых долгов — как там.",
+    "- person — только для lend и owe: имя в именительном падеже; если человек есть среди людей из долгов — как там.",
     "- note — коротко, за что или где (магазин, заведение), без суммы и названия статьи; можно пустую строку.",
     "- date — день операции: по умолчанию сегодня; «вчера», «в понедельник» переводи в дату, не позже сегодня.",
     "- dueDate — срок возврата долга, если назван, иначе пустая строка.",
-    "- Без суммы запись не создавай. Ничего не выдумывай.",
+    "Правки:",
+    "- «последняя трата», «вчерашнее такси», «та запись», «её» — найди запись в списке или по переписке и возьми её id. Самая последняя запись — первая в списке.",
+    "- «добавь комментарий …», «допиши …» — note: старый комментарий, если он есть, плюс новое через запятую; «замени комментарий на …» — только новое.",
+    "- «поменяй статью на …» — category из статей того же вида (расход или доход); новое название — только если подходящей нет.",
+    "- Если непонятно, какую запись имеет в виду, или её нет в списке — не делай edit, а спроси в reply.",
+    "Чего ты не умеешь: удалять записи, переименовывать статьи, менять бюджеты, отвечать на вопросы о суммах и отчётах. На такие просьбы скажи в reply, что пока умеешь записывать и править записи, а это делается в приложении вручную.",
+    "reply — одно-два коротких предложения по-русски: что ты сделаешь, в будущем времени («Добавлю…», «Запишу…», «Исправлю…») — изменения применятся, только когда пользователь нажмёт «Выполнить». Или вопрос, если непонятно. Ничего не выдумывай.",
     "",
-    "Фраза: «" + text + "»"
+    "Новая фраза пользователя: «" + text + "»"
   ].join("\n");
 }
+
 function aiDate(v){
   var d = String(v||"").trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(d) && !isNaN(new Date(d + "T00:00:00").getTime()) ? d : "";
@@ -2742,15 +2834,253 @@ function aiItemsFrom(json){
     return it;
   }).filter(function(it){ return it.amount > 0; });
 }
-var AI_TIMEOUT_MS = 20000;
-function aiParseEntries(text){
+// Gemini на бесплатном уровне то отвечает за секунду, то при нагрузке у Google думает
+// 15–30 секунд — ждём с запасом, иначе фраза зря уходила бы в разбор правилами
+var AI_TIMEOUT_MS = 30000;
+function aiWithTimeout(p){
   return new Promise(function(resolve, reject){
     var timer = setTimeout(function(){ reject(new Error("timeout")); }, AI_TIMEOUT_MS);
-    window.financeAI.json(aiEntriesPrompt(text)).then(function(json){
-      clearTimeout(timer);
-      try{ resolve(aiItemsFrom(json)); }catch(e){ reject(e); }
-    }, function(err){ clearTimeout(timer); reject(err); });
+    p.then(function(v){ clearTimeout(timer); resolve(v); }, function(err){ clearTimeout(timer); reject(err); });
   });
+}
+// запрос помощнику → {reply, adds, edits}. Промпт собирается сразу, до того как фраза
+// попадёт в переписку, — иначе она ушла бы модели дважды
+function assistantAsk(text){
+  return aiWithTimeout(window.financeAI.json(assistantPrompt(text))).then(assistantPlanFrom);
+}
+function assistantPlanFrom(json){
+  json = json || {};
+  var acts = Array.isArray(json.actions) ? json.actions : [];
+  var raws = acts.filter(function(a){ return a && a.op==="add"; }).map(function(a){ return a.entry || {}; });
+  if(Array.isArray(json.entries)) raws = raws.concat(json.entries);   // ответ одним списком записей
+  return {
+    reply: String(json.reply||"").trim(),
+    adds: aiItemsFrom({ entries: raws }),
+    edits: acts.filter(function(a){ return a && a.op==="edit"; }).map(aiEditFrom).filter(function(x){ return !!x; })
+  };
+}
+var EDIT_FIELDS_RU = { amount:"сумма", note:"комментарий", date:"дата", category:"статья", person:"имя", dueDate:"срок возврата" };
+// правка от модели → {id, label, changes, before}; null — записи нет или менять нечего
+function aiEditFrom(a){
+  var e = state.entries.find(function(x){ return x.id===String((a && a.id) || ""); });
+  if(!e) return null;
+  var c = a.changes || {}, ch = {}, before = {};
+  var debt = e.type==="lend" || e.type==="owe";
+  if(c.amount!=null && c.amount!==""){
+    var n = Number(String(c.amount).replace(/[^\d.,]/g, "").replace(",", "."));
+    if(isFinite(n) && n > 0) ch.amount = Math.round(n*100)/100;
+  }
+  if(typeof c.note==="string") ch.note = capitalize(c.note.trim());
+  if(aiDate(c.date)) ch.date = aiDate(c.date);
+  if(c.category && (e.type==="expense" || e.type==="income")){
+    var known = findCategory(c.category, e.type);
+    ch.category = known ? known.name : capitalize(String(c.category).trim());
+  }
+  if(debt && c.person) ch.person = capitalize(String(c.person).trim());
+  if(debt && c.dueDate!==undefined && (aiDate(c.dueDate) || c.dueDate==="")) ch.dueDate = aiDate(c.dueDate);
+  Object.keys(ch).forEach(function(k){
+    var old = e[k]==null ? "" : e[k];
+    if(String(old)===String(ch[k])) delete ch[k]; else before[k] = old;
+  });
+  if(!Object.keys(ch).length) return null;
+  return { id: e.id, label: entryShort(e), changes: ch, before: before };
+}
+// «Транспорт · 1 500 ₸ · 25 сентября · такси» — запись одной строкой для чата
+function entryShort(e){
+  var who = (e.type==="lend" || e.type==="owe")
+    ? ((e.type==="lend" ? "мне должен " : "я должен ") + (e.person||"—"))
+    : ((e.type==="income" ? "доход: " : "") + (e.category || "без статьи"));
+  return capitalize(who) + " · " + fmtMoney(e.amount) + (e.date ? " · " + shortDate(e.date) : "") + (e.note ? " · " + e.note : "");
+}
+function editFieldVal(k, v){
+  if(k==="amount") return fmtMoney(v);
+  if(k==="date" || k==="dueDate") return v ? shortDate(v) : "—";
+  return v ? "«" + v + "»" : "—";
+}
+function planLines(plan){
+  var out = [];
+  (plan.adds||[]).forEach(function(it){ out.push("Записать: " + entryShort(it)); });
+  (plan.edits||[]).forEach(function(ed){
+    out.push("Изменить " + ed.label + ": " + Object.keys(ed.changes).map(function(k){
+      return EDIT_FIELDS_RU[k] + " " + editFieldVal(k, ed.before[k]) + " → " + editFieldVal(k, ed.changes[k]);
+    }).join(", "));
+  });
+  return out;
+}
+
+/* ---------- переписка ----------
+   Хранится в localStorage этого устройства, отдельно для каждого аккаунта: это удобство,
+   а не данные — сами записи живут в базе. Последние CHAT_MAX сообщений; по ним помощник
+   понимает «а к той записи…». */
+var CHAT_MAX = 40;
+var PLAN_STATE_RU = { done:"выполнено", cancel:"отменено", undone:"выполнено и отменено", review:"открыто на проверку" };
+var chatLog = null, chatVeil = null, chatBusy = false;
+function chatKey(){ return "grossbukh_chat_" + (queueAcct() || "local"); }
+function chatAll(){
+  if(chatLog) return chatLog;
+  try{
+    var a = JSON.parse(localStorage.getItem(chatKey()) || "[]");
+    chatLog = Array.isArray(a) ? a : [];
+  }catch(e){ chatLog = []; }
+  return chatLog;
+}
+function chatSave(){
+  var a = chatAll();
+  if(a.length > CHAT_MAX) chatLog = a.slice(-CHAT_MAX);
+  try{ localStorage.setItem(chatKey(), JSON.stringify(chatLog)); }catch(e){}
+  drawChat();
+}
+function chatPush(m){ m.at = new Date().toISOString(); chatAll().push(m); chatSave(); return m; }
+// ответ помощника → сообщение с предложением (plan), если есть что делать
+function chatBotFrom(res){
+  var plan = (res.adds.length || res.edits.length) ? { adds: res.adds, edits: res.edits } : null;
+  return chatPush({ role:"bot", text: res.reply || (plan ? "Вот что сделаю:" : "Не понял, что сделать. Скажите иначе?"),
+                    plan: plan, state:"" });
+}
+function chatRemember(text, res){
+  chatPush({ role:"me", text:text });
+  return chatBotFrom(res);
+}
+function chatAsk(text){
+  var ask = assistantAsk(text);
+  chatBusy = true;
+  chatPush({ role:"me", text:text });
+  ask.then(chatBotFrom, function(){
+    chatPush({ role:"bot", text:"ИИ не ответил — проверьте связь и повторите." });
+  }).then(function(){ chatBusy = false; drawChat(); });
+}
+// «Изменить» есть, когда правку можно открыть в обычной форме: только новые записи
+// (список проверки) или одна правка (форма записи)
+function canReviewPlan(plan){
+  return (plan.adds.length && !plan.edits.length) || (!plan.adds.length && plan.edits.length===1);
+}
+function reviewPlan(msg){
+  var plan = msg.plan;
+  if(plan.adds.length){
+    openBatchModal(plan.adds.map(function(it){ return Object.assign({}, it); }), {
+      title: "Проверьте записи", note: "Поправьте, что нужно, — сохранится по кнопке.",
+      onSaved: function(){ msg.state = "done"; chatSave(); }
+    });
+    return;
+  }
+  var ed = plan.edits[0];
+  var e = state.entries.find(function(x){ return x.id===ed.id; });
+  if(!e){ toast("Этой записи уже нет"); return; }
+  msg.state = "review"; chatSave();
+  openEntryModal(Object.assign({}, e, ed.changes), e.id);
+}
+// «Выполнить»: правки и новые записи разом, с общей отменой
+var planRunning = null;   // сообщение, чей план сейчас выполняется, — второй тап не повторит правки
+function runPlan(msg){
+  if(!db){ toast("Нет связи с облаком — попробуйте позже"); return; }
+  if(planRunning===msg) return;
+  var plan = msg.plan, undo = [];
+  var items = plan.adds.map(function(it){ return Object.assign({}, it); });
+  var err = parsedItemsError(items);
+  if(err){ toast(err + " — нажмите «Изменить»"); return; }
+  planRunning = msg;
+  plan.edits.forEach(function(ed){
+    var e = state.entries.find(function(x){ return x.id===ed.id; });
+    if(!e) return;
+    var ch = Object.assign({}, ed.changes);
+    if(ch.category) ch.category = ensureCategory(ch.category, e.type).name;
+    ch.updatedAt = new Date().toISOString();
+    db.collection("entries").doc(ed.id).update(ch);
+    undo.push(function(){
+      db.collection("entries").doc(ed.id).update(Object.assign({}, ed.before, { updatedAt: new Date().toISOString() }));
+    });
+  });
+  saveParsedItems(items, function(results){
+    results.forEach(function(r){ undo.push(function(){ undoAdd(r, true); }); });
+    planRunning = null;
+    msg.state = "done"; chatSave();
+    toast("Готово", function(){
+      undo.forEach(function(f){ f(); });
+      msg.state = "undone"; chatSave();
+      toast("Отменено");
+    });
+  });
+}
+function openChatModal(){
+  if(chatVeil && modalStack.indexOf(chatVeil) >= 0){ drawChat(); return; }
+  chatVeil = openModal(
+    '<div class="modal-head"><span class="modal-title">Помощник</span>'+
+      '<span class="chat-head-acts"><button class="btn btn-ghost btn-sm" id="chatClear">Очистить</button>'+
+      '<button class="icon-btn" id="chatClose" title="Закрыть">✕</button></span></div>'+
+    '<div class="chat-log" id="chatLog"></div>'+
+    '<div class="chat-form">'+
+      '<button class="btn btn-ghost chat-mic" id="chatMic" type="button" title="Голосовой ввод">🎤</button>'+
+      '<textarea id="chatInput" rows="1" placeholder="Трата или команда"></textarea>'+
+      '<button class="btn btn-primary" id="chatSend" title="Отправить">↑</button>'+
+    '</div>',
+    function(veil){
+      veil.querySelector(".modal").classList.add("chat-modal");
+      var inp = veil.querySelector("#chatInput");
+      function send(){
+        var t = inp.value.trim();
+        if(!t || chatBusy) return;
+        if(!window.financeAI){ toast("Помощник недоступен"); return; }
+        inp.value = "";
+        chatAsk(t);
+      }
+      veil.querySelector("#chatSend").addEventListener("click", send);
+      inp.addEventListener("keydown", function(e){ if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); send(); } });
+      veil.querySelector("#chatClose").addEventListener("click", function(){ closeModal(veil); });
+      veil.querySelector("#chatClear").addEventListener("click", function(){
+        confirmModal("Очистить переписку?", "Записи в базе не тронутся — помощник просто забудет разговор.", "Очистить", function(){
+          chatLog = []; chatSave();
+        });
+      });
+      var voice = attachVoice(veil.querySelector("#chatMic"), inp);
+      veil.__onClose = function(){ if(voice) voice.stop(); chatVeil = null; };
+    }
+  );
+  drawChat();
+}
+function drawChat(){
+  if(!chatVeil) return;
+  var box = chatVeil.querySelector("#chatLog");
+  if(!box) return;
+  var list = chatAll();
+  var html = list.length ? "" : '<div class="chat-msg bot">Скажите, что записать — «такси 1500, обед 3000», — '+
+    'или что поправить — «к последней трате добавь комментарий за бензин», «у вчерашнего такси сумма 2000».</div>';
+  html += list.map(function(m, i){
+    if(m.role==="me") return '<div class="chat-msg me">'+escapeHtml(m.text)+'</div>';
+    var plan = "";
+    if(m.plan){
+      plan = '<div class="chat-plan">'+
+        planLines(m.plan).map(function(l){ return '<div class="cp-line">'+escapeHtml(l)+'</div>'; }).join("")+
+        (m.state ? '<div class="cp-state'+(m.state==="done" ? " done" : "")+'">'+escapeHtml(PLAN_STATE_RU[m.state]||"")+'</div>'
+          : '<div class="cp-acts">'+
+              '<button class="btn btn-primary btn-sm" data-plan-run="'+i+'">Выполнить</button>'+
+              (canReviewPlan(m.plan) ? '<button class="btn btn-ghost btn-sm" data-plan-review="'+i+'">Изменить</button>' : '')+
+              '<button class="btn btn-ghost btn-sm" data-plan-cancel="'+i+'">Отмена</button>'+
+            '</div>')+
+      '</div>';
+    }
+    return '<div class="chat-msg bot">'+escapeHtml(m.text||"")+plan+'</div>';
+  }).join("");
+  if(chatBusy) html += '<div class="chat-msg bot wait">Думаю…</div>';
+  box.innerHTML = html;
+  box.scrollTop = box.scrollHeight;
+  function msgAt(el, attr){ return chatAll()[parseInt(el.getAttribute(attr),10)]; }
+  box.querySelectorAll("[data-plan-run]").forEach(function(b){
+    b.addEventListener("click", function(){ var m = msgAt(b, "data-plan-run"); if(m && !m.state) runPlan(m); });
+  });
+  box.querySelectorAll("[data-plan-review]").forEach(function(b){
+    b.addEventListener("click", function(){ var m = msgAt(b, "data-plan-review"); if(m && !m.state) reviewPlan(m); });
+  });
+  box.querySelectorAll("[data-plan-cancel]").forEach(function(b){
+    b.addEventListener("click", function(){ var m = msgAt(b, "data-plan-cancel"); if(m){ m.state = "cancel"; chatSave(); } });
+  });
+}
+// кнопка чата на Главной есть, только когда есть ИИ
+function syncChatButton(){
+  var b = document.getElementById("quickChatBtn");
+  if(!b) return;
+  var on = !!window.financeAI;
+  b.hidden = !on;
+  b.parentNode.classList.toggle("has-chat", on);
 }
 
 document.querySelectorAll("[data-newdebt]").forEach(function(b){
@@ -3561,6 +3891,7 @@ function groupByPerson(list){
 function renderAll(){
   try{
     renderMeChip();
+    syncChatButton();
     renderQueue();
     renderTabBadges();
     renderQuickButtons();
