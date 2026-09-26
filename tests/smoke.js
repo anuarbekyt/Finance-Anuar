@@ -5,6 +5,81 @@ const { chromium } = require("playwright");
 const path = require("path");
 
 const page_url = "file://" + path.join(__dirname, "..", "dev", "test.html");
+
+// Синтетическая выписка Kaspi для проверки импорта: настоящую (с ИИН и счётом) в репозиторий
+// класть нельзя. Устроена как у Kaspi: шрифт Type0 с двухбайтовыми кодами и таблицей ToUnicode,
+// потоки сжаты deflate, каждая ячейка — отдельный BT…ET со своими координатами. Коды глифов
+// здесь равны кодам Unicode; ячейки с пометкой lit записаны строкой в скобках с экранированием
+// (у «Ш» младший байт — это «(»), содержимое второй страницы сдвинуто через cm.
+function kaspiPdf(pages) {
+  const zlib = require("zlib");
+  const hex4 = (n) => n.toString(16).toUpperCase().padStart(4, "0");
+  const used = new Set();
+  pages.forEach((cells) => cells.forEach((c) => [...c[2]].forEach((ch) => used.add(ch.charCodeAt(0)))));
+  const codes = [...used].filter((c) => c < 0x30 || c > 0x39).sort((a, b) => a - b);
+  const cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n" +
+    "1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n" +
+    codes.length + " beginbfchar\n" + codes.map((c) => "<" + hex4(c) + "> <" + hex4(c) + ">").join("\n") + "\nendbfchar\n" +
+    "1 beginbfrange\n<0030> <0039> <0030>\nendbfrange\nendcmap\nend\nend";
+  const utf16 = (t) => [...t].map((ch) => { const n = ch.charCodeAt(0); return String.fromCharCode(n >> 8, n & 255); }).join("");
+  const enc = (t, lit) => lit
+    ? "(" + utf16(t).replace(/[()\\]/g, (c) => "\\" + c).replace(/\n/g, "\\n").replace(/\r/g, "\\r") + ")"
+    : "<" + [...t].map((ch) => hex4(ch.charCodeAt(0))).join("") + ">";
+  const bodies = [];
+  const add = (body) => { bodies.push(body); return bodies.length; };
+  const stream = (data, lengthRef) => {
+    const z = zlib.deflateSync(Buffer.from(data, "latin1")).toString("latin1");
+    const len = lengthRef ? add(String(z.length)) + " 0 R" : String(z.length);
+    return "<< /Length " + len + " /Filter /FlateDecode >>\nstream\n" + z + "\nendstream";
+  };
+  const catalog = add("<< /Type /Catalog /Pages 2 0 R >>");
+  const pagesObj = add("");
+  const cid = add("<< /Type /Font /Subtype /CIDFontType2 /BaseFont /ArialMT /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> >>");
+  const tu = add(stream(cmap, true));
+  const font = add("<< /Type /Font /Subtype /Type0 /BaseFont /ArialMT /Encoding /Identity-H /DescendantFonts [" + cid + " 0 R] /ToUnicode " + tu + " 0 R >>");
+  const kids = pages.map((cells, i) => {
+    let content = cells.map(([x, y, t, lit]) => "BT\n/F1 9.5 Tf\n" + x + " " + y + " Td\n" + enc(t, lit) + " Tj\nET\n").join("");
+    if (i > 0) content = "q\n1 0 0 1 10 0 cm\n" + content + "Q\n";
+    const c = add(stream(content, false));
+    return add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 " + font + " 0 R >> >> /Contents " + c + " 0 R >>");
+  });
+  bodies[pagesObj - 1] = "<< /Type /Pages /Kids [" + kids.map((k) => k + " 0 R").join(" ") + "] /Count " + kids.length + " >>";
+  let out = "%PDF-1.4\n";
+  const offs = [];
+  bodies.forEach((b, i) => { offs.push(out.length); out += (i + 1) + " 0 obj\n" + b + "\nendobj\n"; });
+  const xref = out.length;
+  out += "xref\n0 " + (bodies.length + 1) + "\n0000000000 65535 f \n" + offs.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("");
+  out += "trailer\n<< /Size " + (bodies.length + 1) + " /Root " + catalog + " 0 R >>\nstartxref\n" + xref + "\n%%EOF\n";
+  return Buffer.from(out, "latin1");
+}
+function kaspiSample() {
+  const row = (y, date, amount, op, name, lit) =>
+    [[51.78, y, date], [134.42, y, amount + " ₸   "], [257.02, y, op + "  ", lit], [300.42, y, name, lit]];
+  const page1 = [
+    [40, 800, "АО «Kaspi Bank», БИК CASPKZKA, www.kaspi.kz"],
+    [40, 780, "ВЫПИСКА"],
+    [40, 765, "по Kaspi Gold за период с 10.03.25 по 12.03.25"],
+    [326, 740, "Номер карты:"], [403, 740, "*1234"],
+    [43, 700, "Доступно на 10.03.25"], [218, 700, "+ 100 000,00 ₸  "],
+    [43, 685, "Доступно на 12.03.25"], [218, 685, "+ 152 863,00 ₸  "],
+    [51, 660, "Дата"], [134, 660, "Сумма"], [257, 660, "Операция"], [300, 660, "Детали"],
+    ...row(640, "12.03.25", "- 1 660,00", "Покупка", "YANDEX.GO"),
+    ...row(624, "12.03.25", "- 3 000,00", "Перевод", "Айжан И."),
+    ...row(608, "12.03.25", "+ 50 000,00", "Пополнение", "В Kaspi Банкомате"),
+    ...row(592, "11.03.25", "- 5 240,00", "Покупка", "YANDEX.DELIVERY"),
+    ...row(576, "11.03.25", "+ 5 240,00", "Покупка", "YANDEX.DELIVERY"),
+    ...row(560, "11.03.25", "- 4 500,00", "Покупка", "Шоколадница (кофе)", true),
+    ...row(544, "10.03.25", "- 7 777,00", "Покупка", "MAGNUM"),
+    ...row(528, "10.03.25", "+ 20 000,00", "Пополнение", "Бауыржан З."),
+  ];
+  const page2 = [
+    [40, 800, "Приложение к Справке №1 от 12 марта 2025"],
+    ...row(760, "10.03.25", "- 100,00", "Покупка", "KAMEDA"),
+    ...row(744, "10.03.25", "- 100,00", "Покупка", "KAMEDA"),
+    [40, 700, "- Сумма заблокирована. Банк ожидает подтверждения от платежной системы."],
+  ];
+  return kaspiPdf([page1, page2]);
+}
 const clean = (s) => s.replace(/ | /g, " ").replace(/\n/g, " | ");
 
 // Скачанный playwright-ом Chromium есть не везде; если его нет — берём уже
@@ -636,6 +711,52 @@ async function launchBrowser() {
     await page.click("#cdBoth"); await page.waitForTimeout(400);
     await page.click("#saveEntryBtn"); await page.waitForTimeout(900);
     return page.url().startsWith("file:");
+  });
+
+  // выписка Kaspi: PDF читается, операции размечены по правилам, записи ложатся с bankRef,
+  // а повторная загрузка той же выписки ничего не задваивает
+  await check("выписка Kaspi: разбор, разметка и повторная загрузка", async () => {
+    await go("dashboard", 200);
+    await page.evaluate(async () => {
+      const db = await window.claude.use("db");
+      await db.collection("entries").add({ type: "expense", amount: 7777, date: "2025-03-10", category: "Продукты", note: "магнум" });
+    });
+    const pdf = { name: "kaspi.pdf", mimeType: "application/pdf", buffer: kaspiSample() };
+    await page.setInputFiles("#kaspiFile", pdf);
+    await page.waitForTimeout(900);
+    const rows = await page.locator(".kx-row").evaluateAll((els) => els.map((e) => {
+      const act = e.querySelector(".seg-opt.active"), sel = e.querySelector("select");
+      return { name: e.querySelector(".kx-name").textContent, choice: act ? act.getAttribute("data-v") : "",
+               cat: sel ? sel.value : "", sub: e.querySelector(".kx-sub").textContent };
+    }));
+    const intro = clean(await page.locator(".modal .note-box").first().innerText());
+    const by = (n, i = 0) => rows.filter((r) => r.name === n)[i] || {};
+    const parsed = rows.length === 10 && intro.includes("*1234") && intro.includes("сходится")
+      && by("YANDEX.GO").choice === "expense" && by("YANDEX.GO").cat === "Транспорт"
+      && by("Айжан И.").choice === "expense" && by("Айжан И.").cat === ""
+      && by("В Kaspi Банкомате").choice === "skip"
+      && by("YANDEX.DELIVERY").choice === "skip" && by("YANDEX.DELIVERY", 1).choice === "skip"
+      && by("Шоколадница (кофе)").cat === "Кафе и рестораны"
+      && by("MAGNUM").choice === "skip" && by("MAGNUM").sub.includes("уже записано")
+      && by("Бауыржан З.").choice === "income";
+    if (!parsed) console.log("   выписка разобрана не так:", intro, JSON.stringify(rows));
+    // статья, выбранная у одной строки, расходится по тому же магазину
+    await page.locator(".kx-row", { hasText: "KAMEDA" }).first().locator("select").selectOption("Сигареты");
+    await page.waitForTimeout(100);
+    const kameda = await page.locator(".kx-row", { hasText: "KAMEDA" }).nth(1).locator("select").inputValue();
+    await page.click("#kxSave"); await page.waitForTimeout(600);
+    const saved = await page.evaluate(() => Object.values(window.__store.entries).filter((e) => e.bankRef)
+      .map((e) => e.type + ":" + e.bankName + ":" + e.category).sort());
+    const savedOk = saved.length === 6 && saved.includes("expense:Айжан И.:Прочее")
+      && saved.filter((s) => s === "expense:KAMEDA:Сигареты").length === 2 && saved.includes("income:Бауыржан З.:Прочий доход");
+    if (!savedOk) console.log("   записано не то:", JSON.stringify(saved));
+    await page.waitForTimeout(5400);            // тост с «Отменить» живёт 5 секунд
+    await page.setInputFiles("#kaspiFile", pdf);
+    await page.waitForTimeout(900);
+    const again = clean(await page.locator(".modal .note-box").first().innerText());
+    const againRows = await page.locator(".kx-row").count();
+    await page.click("#kxCancel"); await page.waitForTimeout(300);
+    return parsed && kameda === "Сигареты" && savedOk && again.includes("Новых операций нет") && againRows === 0;
   });
 
   console.log(errors.length ? "\nОШИБКИ:\n" + errors.join("\n") : "\nОшибок нет");

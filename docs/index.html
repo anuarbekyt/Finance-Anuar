@@ -13,7 +13,7 @@
 <style>body{margin:0;padding:0}img{max-width:100%}[hidden]:not([hidden=until-found]){display:none!important}.grecaptcha-badge{visibility:hidden}</style>
 </head>
 <body>
-<script src="./config.js?v=202609251834"></script>
+<script src="./config.js?v=202609260626"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore-compat.js"></script>
@@ -891,6 +891,42 @@
   .batch-row select, .batch-row input{ width:100%; }
   .batch-note{ font-size:11.5px; color:var(--ink-mute); padding-left:34px; margin-top:5px; }
 
+  /* ---------- выписка Kaspi: разметка операций ---------- */
+  /* Операции сгруппированы по дням. В строке — контрагент и сумма, под ними что это
+     и почему так помечено, ниже выбор «Расход / Доход / Долг / Пропустить» и статья.
+     Пропущенная строка гаснет, но остаётся на месте — передумать можно одним нажатием. */
+  .kx-day{
+    font-family:var(--font-num); font-size:11px; font-weight:700; color:var(--ink-mute);
+    letter-spacing:-0.01em; padding:14px 0 4px; border-bottom:1px solid var(--line);
+  }
+  .kx-row{ padding:10px 0; border-bottom:1px solid var(--line-soft); }
+  .kx-row.skip .kx-top, .kx-row.skip .kx-sub{ opacity:.45; }
+  .kx-top{ display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
+  .kx-name{ font-size:13.5px; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .kx-amt{ flex:0 0 auto; font-family:var(--font-num); font-weight:700; font-size:13.5px; letter-spacing:-0.03em; }
+  .kx-amt.neg{ color:var(--bad); }
+  .kx-amt.pos{ color:var(--good); }
+  .kx-sub{ font-size:11.5px; color:var(--ink-mute); margin-top:2px; }
+  .kx-sub .kx-why{ color:var(--accent); }
+  .kx-ctl{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .kx-ctl .seg{ flex:1 1 250px; flex-wrap:nowrap; }
+  .kx-ctl .seg-opt{ padding:7px 4px; font-size:12px; }
+  .kx-ctl .kx-field{ flex:1 1 160px; min-width:0; display:flex; gap:6px; }
+  .kx-ctl .kx-field select, .kx-ctl .kx-field input{ flex:1 1 auto; min-width:0; }
+  .kx-more{ display:block; width:100%; margin-top:10px; }
+  /* итог и кнопки прилипают к низу листа: до конца списка из сотни операций не долистывать */
+  .kx-foot{
+    position:sticky; bottom:calc(-20px - env(safe-area-inset-bottom,0px)); z-index:1;
+    margin:0 -20px calc(-20px - env(safe-area-inset-bottom,0px));
+    padding:10px 20px calc(20px + env(safe-area-inset-bottom,0px));
+    background:var(--card); border-top:1px solid var(--line);
+  }
+  .kx-foot .modal-actions{ margin-top:10px; }
+  .kx-total{ font-size:12.5px; color:var(--ink-soft); line-height:1.55; }
+  .kx-total b{ font-family:var(--font-num); letter-spacing:-0.03em; }
+  .quick-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:9px; }
+  .quick-head .quick-label{ margin-bottom:0; }
+
   /* ---------- помощник: чат ----------
      Переписка во всю высоту листа, строка ввода прижата вниз. Предложение помощника —
      рамка внутри его сообщения: что будет сделано и кнопки «Выполнить / Изменить / Отмена». */
@@ -985,7 +1021,11 @@
       <button class="btn btn-ghost btn-sm" id="queueSendBtn">Отправить сейчас</button>
     </div>
     <div class="quick-card">
-      <div class="quick-label">Быстрая запись</div>
+      <div class="quick-head">
+        <span class="quick-label">Быстрая запись</span>
+        <button class="btn btn-ghost btn-sm" id="kaspiBtn" type="button" title="Загрузить выписку Kaspi в PDF и разметить операции">📄 Выписка Kaspi</button>
+        <input type="file" id="kaspiFile" accept="application/pdf,.pdf" hidden>
+      </div>
       <div class="quick-row">
         <div class="quick-input-wrap">
           <textarea id="quickInput" placeholder="Продиктуйте трату или команду"></textarea>
@@ -1260,10 +1300,14 @@ var MONTHS_RU_GEN = ["января","февраля","марта","апреля"
 // Срабатывает только если статья с таким именем реально заведена в базе,
 // поэтому переименование или удаление статьи ничего не ломает.
 var CAT_HINTS = {
-  "Продукты": ["продукт","магазин","супермаркет","магнум","галмарт","смолл","базар","рынок","хлеб","молок","мяс","овощ","фрукт","бакале","вода"],
-  "Транспорт": ["такси","яндекс го","индрайв","indriver","бензин","заправк","автобус","метро","проезд","парковк","каршеринг","шиномонт","автомойк","мойк"],
+  // латиница — названия магазинов, как их пишет банк в выписке (см. ВЫПИСКА KASPI)
+  "Продукты": ["продукт","магазин","супермаркет","магнум","галмарт","смолл","базар","рынок","хлеб","молок","мяс","овощ","фрукт","бакале","вода",
+               "grocery","market","маркет","magnum","galmart","small"],
+  "Транспорт": ["такси","яндекс го","индрайв","indriver","бензин","заправк","автобус","метро","проезд","парковк","каршеринг","шиномонт","автомойк","мойк",
+                "yandex.go","yandex go","qazaq oil","helios","sinooil","азс"],
   "Сигареты": ["сигарет","табак","вейп","стик","айкос","iqos","зажигалк"],
-  "Кафе и рестораны": ["кафе","ресторан","обед","ужин","завтрак","кофе","бар","паб","пицц","суши","бургер","шашлык","столов","чайхан","перекус"],
+  "Кафе и рестораны": ["кафе","ресторан","обед","ужин","завтрак","кофе","бар","паб","пицц","суши","бургер","шашлык","столов","чайхан","перекус",
+                       "yandex.eda","лагман","лагыман","coffee","cafe","restaurant"],
   "Здоровье": ["аптек","лекарств","таблетк","врач","клиник","стоматолог","зуб","анализ","витамин","массаж","приём"],
   "Одежда": ["одежд","обув","кроссовк","куртк","джинс","футболк","платье","носк","бель","химчистк"],
   "Связь и интернет": ["связь","интернет","мобильн","актив","билайн","теле2","tele2","altel","алтел","kcell","кселл","роутер","баланс телефон"],
@@ -1838,43 +1882,50 @@ function docsOf(snap){
   });
 }
 
+// Снимки базы идут очередью: загрузка выписки добавляет десятки записей подряд, и на каждую
+// приходит свой снимок. Перерисовываем один раз на пачку, иначе телефон подвисает на секунды.
+var renderTimer = null;
+function renderSoon(){
+  if(renderTimer) return;
+  renderTimer = setTimeout(function(){ renderTimer = null; renderAll(); }, 30);
+}
 function subscribeAll(){
   db.collection("entries").orderBy("date","desc").limit(ENTRIES_LIMIT).onSnapshot(function(snap){
     state.entries = docsOf(snap);
     // упёрлись в лимит подписки — часть истории не загружена, об этом надо сказать вслух,
     // иначе отчёты за старые месяцы молча покажут неполные суммы
     state.entriesTruncated = snap.size >= ENTRIES_LIMIT;
-    renderAll();
+    renderSoon();
   }, dbError("записи"));
 
   db.collection("recurring").onSnapshot(function(snap){
     state.recurring = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("платежи"));
 
   db.collection("recurringPayments").limit(3000).onSnapshot(function(snap){
     state.recurringPayments = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("оплаты"));
 
   db.collection("goals").onSnapshot(function(snap){
     state.goals = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("цели"));
 
   db.collection("quickButtons").onSnapshot(function(snap){
     state.quickButtons = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("быстрые записи"));
 
   db.collection("debtPayments").limit(3000).onSnapshot(function(snap){
     state.debtPayments = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("график долга"));
 
   db.collection("monthPlans").limit(120).onSnapshot(function(snap){
     state.monthPlans = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("план месяца"));
 
   // настройки вида (пока только набор и порядок плиток) — в облаке, чтобы телефон
@@ -1882,13 +1933,13 @@ function subscribeAll(){
   db.collection("uiSettings").limit(20).onSnapshot(function(snap){
     state.uiSettings = docsOf(snap);
     pendingTiles = null;
-    renderAll();
+    renderSoon();
   }, dbError("настройки вида"));
 
   // сверки остатка с реальностью: разница между тем, что вышло по записям, и тем, что есть
   db.collection("cashChecks").limit(500).onSnapshot(function(snap){
     state.cashChecks = docsOf(snap);
-    renderAll();
+    renderSoon();
   }, dbError("сверки"));
 
   var seeded = false, essentialMigrated = false;
@@ -1913,7 +1964,7 @@ function subscribeAll(){
       DEFAULT_EXPENSE_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"expense", essential: DEFAULT_ESSENTIAL_CATS.indexOf(name)>=0, createdAt:new Date().toISOString()}); });
       DEFAULT_INCOME_CATEGORIES.forEach(function(name){ db.collection("categories").add({name:name, kind:"income", createdAt:new Date().toISOString()}); });
     }
-    renderAll();
+    renderSoon();
   }, dbError("статьи"));
 }
 
@@ -2245,6 +2296,9 @@ function saveParsedItems(items, done){
       payload.dueDate = it.dueDate||"";
       payload.status = "open";
     }
+    // пришло из выписки банка: по bankRef операция не загрузится второй раз, по bankName
+    // в следующей выписке угадываются тип и статья того же магазина или человека
+    if(it.bankRef){ payload.bankRef = it.bankRef; payload.bankName = it.bankName||""; }
     addEntry(payload, function(res){
       results.push(res);
       if(res.queued) queuedCount++;
@@ -3315,6 +3369,716 @@ function syncChatButton(){
 document.querySelectorAll("[data-newdebt]").forEach(function(b){
   b.addEventListener("click", function(){
     openEntryModal({ type: b.getAttribute("data-newdebt"), date: todayStr() }, null);
+  });
+});
+
+/* ============ ВЫПИСКА KASPI ============
+   Выписка Kaspi в PDF → список операций → пользователь отмечает, что из этого расход, доход
+   или долг, а что пропустить. PDF читается прямо в браузере, без библиотек и без ИИ: в выписке
+   ИИН, номер счёта и имя, отправлять её куда-то незачем.
+   Kaspi отдаёт обычный PDF: потоки сжаты deflate (распаковывает сам браузер, DecompressionStream),
+   кириллица — двухбайтовыми кодами шрифта с таблицей ToUnicode. Каждая ячейка таблицы — отдельный
+   кусок текста со своими координатами: строки собираются по высоте, ячейки — слева направо. */
+
+// байты → строка «байт = символ»: так по PDF можно искать регулярками
+function pdfBin(bytes){
+  var out = [], CH = 0x8000;
+  for(var i=0; i<bytes.length; i+=CH) out.push(String.fromCharCode.apply(null, bytes.subarray(i, i+CH)));
+  return out.join("");
+}
+function pdfSkip(s, p){
+  for(;;){
+    var c = s.charCodeAt(p);
+    if(c===32 || c===10 || c===13 || c===9 || c===12 || c===0){ p++; continue; }
+    if(c===37){ while(p < s.length && s.charCodeAt(p)!==10 && s.charCodeAt(p)!==13) p++; continue; }  // % комментарий
+    return p;
+  }
+}
+// Одно значение PDF с позиции p → {v, p}: словарь — объект, массив — массив, имя — {n},
+// ссылка «12 0 R» — {r}, строка — {s} (байты символами), оператор потока — {op}.
+function pdfValue(s, p){
+  p = pdfSkip(s, p);
+  var c = s.charAt(p), m;
+  if(c==="<" && s.charAt(p+1)==="<"){
+    var d = {};
+    p += 2;
+    for(;;){
+      p = pdfSkip(s, p);
+      if(p >= s.length || s.charAt(p)===">") return { v:d, p:p+2 };
+      var k = pdfValue(s, p), val = pdfValue(s, k.p);
+      if(k.v && k.v.n !== undefined) d[k.v.n] = val.v;
+      p = val.p;
+    }
+  }
+  if(c==="["){
+    var a = [];
+    p++;
+    for(;;){
+      p = pdfSkip(s, p);
+      if(p >= s.length || s.charAt(p)==="]") return { v:a, p:p+1 };
+      var x = pdfValue(s, p);
+      a.push(x.v);
+      p = x.p;
+    }
+  }
+  if(c==="/"){
+    m = /^\/[^\s\/\[\]<>(){}%\0]*/.exec(s.substr(p, 200));
+    return { v:{ n: m[0].slice(1).replace(/#([0-9a-fA-F]{2})/g, function(_, h){ return String.fromCharCode(parseInt(h,16)); }) },
+             p: p + m[0].length };
+  }
+  if(c==="(") return pdfLiteral(s, p);
+  if(c==="<"){
+    var e = s.indexOf(">", p);
+    if(e < 0) e = s.length;
+    var hex = s.slice(p+1, e).replace(/[^0-9a-fA-F]/g, ""), str = "";
+    if(hex.length % 2) hex += "0";
+    for(var i=0; i<hex.length; i+=2) str += String.fromCharCode(parseInt(hex.substr(i,2), 16));
+    return { v:{ s:str }, p:e+1 };
+  }
+  m = /^([+-]?(?:\d+\.?\d*|\.\d+))(?:\s+(\d+)\s+R(?![A-Za-z]))?/.exec(s.substr(p, 40));
+  if(m){
+    if(m[2] !== undefined && /^\d+$/.test(m[1])) return { v:{ r:parseInt(m[1],10) }, p:p+m[0].length };
+    return { v:parseFloat(m[1]), p:p+m[1].length };
+  }
+  m = /^[A-Za-z'"*][A-Za-z0-9*]*/.exec(s.substr(p, 16));
+  if(m){
+    var w = m[0];
+    return { v: w==="true" ? true : (w==="false" ? false : (w==="null" ? null : { op:w })), p:p+w.length };
+  }
+  return { v:null, p:p+1 };
+}
+// строка в круглых скобках: экранирование \( \) \\ \n и восьмеричные коды \ddd
+function pdfLiteral(s, p){
+  var out = "", depth = 1, ESC = { n:"\n", r:"\r", t:"\t", b:"\b", f:"\f", "(":"(", ")":")", "\\":"\\" };
+  p++;
+  while(p < s.length){
+    var c = s.charAt(p++);
+    if(c==="\\"){
+      var n = s.charAt(p++);
+      if(ESC.hasOwnProperty(n)) out += ESC[n];
+      else if(n >= "0" && n <= "7"){
+        var oct = n;
+        while(oct.length < 3 && s.charAt(p) >= "0" && s.charAt(p) <= "7") oct += s.charAt(p++);
+        out += String.fromCharCode(parseInt(oct, 8) & 255);
+      }
+      else if(n==="\r"){ if(s.charAt(p)==="\n") p++; }   // перенос строки внутри строки
+      else if(n!=="\n") out += n;
+    }
+    else if(c==="("){ depth++; out += c; }
+    else if(c===")"){ if(--depth===0) break; out += c; }
+    else out += c;
+  }
+  return { v:{ s:out }, p:p };
+}
+// Все объекты файла: номер → {v, at (начало потока или −1), src}. Таблицу xref не читаем,
+// ищем «N 0 obj» по тексту — так читаются и файлы с испорченной таблицей.
+function pdfObjects(src){
+  var objs = {}, re = /(\d+)\s+(\d+)\s+obj\b/g, m;
+  while((m = re.exec(src))){
+    var val = pdfValue(src, re.lastIndex), p = pdfSkip(src, val.p), at = -1;
+    if(src.substr(p, 6)==="stream"){
+      p += 6;
+      if(src.charAt(p)==="\r") p++;
+      if(src.charAt(p)==="\n") p++;
+      at = p;
+      var end = src.indexOf("endstream", p);
+      if(end > 0) re.lastIndex = end;             // внутри сжатых данных «obj» не ищем
+    }
+    objs[m[1]] = { v:val.v, at:at, src:src };
+  }
+  return objs;
+}
+function pdfGet(objs, v){
+  for(var n=0; v && v.r !== undefined && n < 10; n++){ var o = objs[v.r]; v = o ? o.v : null; }
+  return v;
+}
+function pdfInflate(bin){
+  var bytes = new Uint8Array(bin.length);
+  for(var i=0; i<bin.length; i++) bytes[i] = bin.charCodeAt(i) & 255;
+  var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate"));
+  return new Response(stream).arrayBuffer().then(function(buf){ return pdfBin(new Uint8Array(buf)); });
+}
+// распакованное содержимое потока → Promise строки (запоминается в объекте)
+function pdfStream(objs, num){
+  var o = objs[num];
+  if(!o || o.at < 0) return Promise.resolve("");
+  if(o.data) return o.data;
+  var d = o.v || {}, len = pdfGet(objs, d.Length), src = o.src, end = -1;
+  if(typeof len==="number" && len > 0 && o.at + len <= src.length) end = o.at + len;
+  else {
+    end = src.indexOf("endstream", o.at);
+    if(end < 0) end = src.length;
+    while(end > o.at && /[\r\n]/.test(src.charAt(end-1))) end--;
+  }
+  var f = pdfGet(objs, d.Filter), filters = Array.isArray(f) ? f : (f ? [f] : []);
+  var chain = Promise.resolve(src.slice(o.at, end));
+  filters.forEach(function(x){
+    var name = x && x.n;
+    chain = chain.then(function(data){
+      if(name==="FlateDecode" || name==="Fl") return pdfInflate(data);
+      throw new Error("pdf filter " + name);
+    });
+  });
+  o.data = chain;
+  return chain;
+}
+// объекты, упакованные в потоки (/Type /ObjStm) — так пишут PDF новее 1.4
+function pdfUnpack(objs){
+  var packs = Object.keys(objs).filter(function(k){ var v = objs[k].v; return v && v.Type && v.Type.n==="ObjStm"; });
+  return Promise.all(packs.map(function(k){
+    return pdfStream(objs, k).then(function(data){
+      var d = objs[k].v, n = pdfGet(objs, d.N) || 0, first = pdfGet(objs, d.First) || 0;
+      var head = data.slice(0, first).trim().split(/\s+/).map(Number);
+      for(var i=0; i<n; i++){
+        var num = head[2*i], off = head[2*i+1];
+        if(!objs[num]) objs[num] = { v: pdfValue(data, first + off).v, at:-1, src:data };
+      }
+    }).catch(function(){});
+  }));
+}
+// страницы по порядку: {node, res}; ресурсы наследуются от родительских узлов
+function pdfPages(objs){
+  var root = null, out = [], seen = {};
+  Object.keys(objs).forEach(function(k){ var v = objs[k].v; if(v && v.Type && v.Type.n==="Catalog") root = v; });
+  function walk(ref, res){
+    if(!ref || ref.r === undefined || seen[ref.r]) return;
+    seen[ref.r] = true;
+    var node = pdfGet(objs, ref);
+    if(!node) return;
+    var r = node.Resources || res, kids = pdfGet(objs, node.Kids);
+    if(Array.isArray(kids)) kids.forEach(function(k){ walk(k, r); });
+    else out.push({ node:node, res:r });
+  }
+  if(root) walk(root.Pages, null);
+  if(!out.length){
+    Object.keys(objs).map(Number).sort(function(a,b){ return a-b; }).forEach(function(k){
+      var v = objs[k].v;
+      if(v && v.Type && v.Type.n==="Page") out.push({ node:v, res:v.Resources });
+    });
+  }
+  return out;
+}
+// таблица ToUnicode: код глифа → текст
+function pdfHexStr(h){
+  h = h.replace(/[^0-9a-fA-F]/g, "");
+  if(h.length <= 2) return String.fromCharCode(parseInt(h || "0", 16));
+  var s = "";
+  for(var i=0; i+4<=h.length; i+=4) s += String.fromCharCode(parseInt(h.substr(i,4), 16));
+  return s;
+}
+function pdfCMap(t){
+  var map = {}, m, x, i, c;
+  var reChar = /beginbfchar([\s\S]*?)endbfchar/g;
+  while((m = reChar.exec(t))){
+    var pairs = m[1].match(/<[^>]*>/g) || [];
+    for(i=0; i+1<pairs.length; i+=2) map[parseInt(pairs[i].replace(/[<>\s]/g,""), 16)] = pdfHexStr(pairs[i+1]);
+  }
+  var reRange = /beginbfrange([\s\S]*?)endbfrange/g;
+  while((m = reRange.exec(t))){
+    var rr = /<([^>]*)>\s*<([^>]*)>\s*(<[^>]*>|\[[^\]]*\])/g;
+    while((x = rr.exec(m[1]))){
+      var lo = parseInt(x[1].replace(/\s/g,""), 16), hi = Math.min(parseInt(x[2].replace(/\s/g,""), 16), lo + 0xFFFF);
+      if(x[3].charAt(0)==="["){
+        var list = x[3].match(/<[^>]*>/g) || [];
+        for(c=lo; c<=hi && c-lo<list.length; c++) map[c] = pdfHexStr(list[c-lo]);
+      } else {
+        var base = pdfHexStr(x[3]), head = base.slice(0,-1), last = base.charCodeAt(base.length-1);
+        for(c=lo; c<=hi; c++) map[c] = head + String.fromCharCode(last + c - lo);
+      }
+    }
+  }
+  return map;
+}
+// шрифты страницы: имя → {two (двухбайтовые коды), map}
+function pdfFonts(objs, res){
+  res = pdfGet(objs, res) || {};
+  var dict = pdfGet(objs, res.Font) || {}, fonts = {};
+  return Promise.all(Object.keys(dict).map(function(name){
+    var f = pdfGet(objs, dict[name]) || {};
+    var font = fonts[name] = { two: !!(f.Subtype && f.Subtype.n==="Type0"), map:{} };
+    var tu = f.ToUnicode;
+    if(!tu || tu.r === undefined || !objs[tu.r]) return null;
+    var o = objs[tu.r];
+    if(!o.cmap) o.cmap = pdfStream(objs, tu.r).then(pdfCMap).catch(function(){ return {}; });
+    return o.cmap.then(function(map){ font.map = map; });
+  })).then(function(){ return fonts; });
+}
+function pdfDecode(str, font){
+  var out = "", i, c;
+  if(font.two){
+    for(i=0; i+1<str.length; i+=2){
+      c = (str.charCodeAt(i)<<8) | str.charCodeAt(i+1);
+      if(font.map[c] !== undefined) out += font.map[c];
+    }
+  } else {
+    for(i=0; i<str.length; i++){
+      c = str.charCodeAt(i);
+      out += font.map[c] !== undefined ? font.map[c] : String.fromCharCode(c);
+    }
+  }
+  return out;
+}
+// текст страницы кусками с координатами: [{x, y, t}]
+function pdfPageItems(s, fonts){
+  var items = [], ops = [], stack = [], p = 0;
+  var ctm = [1,0,0,1,0,0], tm = ctm.slice(), tlm = ctm.slice(), font = null, lead = 0;
+  function mul(a, b){
+    return [a[0]*b[0]+a[1]*b[2], a[0]*b[1]+a[1]*b[3], a[2]*b[0]+a[3]*b[2], a[2]*b[1]+a[3]*b[3],
+            a[4]*b[0]+a[5]*b[2]+b[4], a[4]*b[1]+a[5]*b[3]+b[5]];
+  }
+  function nextLine(){ tlm = mul([1,0,0,1,0,-lead], tlm); tm = tlm.slice(); }
+  function dec(v){ return (v && v.s !== undefined && font) ? pdfDecode(v.s, font) : ""; }
+  function put(txt){
+    if(!txt) return;
+    var m = mul(tm, ctm);
+    items.push({ x:m[4], y:m[5], t:txt });
+  }
+  while(p < s.length){
+    var tok = pdfValue(s, p), v = tok.v;
+    p = tok.p;
+    if(!v || v.op === undefined){ ops.push(v); continue; }
+    var op = v.op, n = ops.length;
+    if(op==="q") stack.push(ctm.slice());
+    else if(op==="Q"){ if(stack.length) ctm = stack.pop(); }
+    else if(op==="cm" && n>=6) ctm = mul(ops.slice(n-6), ctm);
+    else if(op==="BT"){ tm = [1,0,0,1,0,0]; tlm = tm.slice(); }
+    else if(op==="Tf" && n>=2) font = fonts[ops[n-2] && ops[n-2].n] || null;
+    else if(op==="TL" && n>=1) lead = ops[n-1];
+    else if((op==="Td" || op==="TD") && n>=2){
+      if(op==="TD") lead = -ops[n-1];
+      tlm = mul([1,0,0,1,ops[n-2],ops[n-1]], tlm);
+      tm = tlm.slice();
+    }
+    else if(op==="Tm" && n>=6){ tlm = ops.slice(n-6); tm = tlm.slice(); }
+    else if(op==="T*") nextLine();
+    else if(op==="Tj" && n>=1) put(dec(ops[n-1]));
+    else if((op==="'" || op==='"') && n>=1){ nextLine(); put(dec(ops[n-1])); }
+    else if(op==="TJ" && n>=1 && Array.isArray(ops[n-1])){
+      var buf = "";
+      ops[n-1].forEach(function(x){ if(typeof x==="number"){ if(x < -200) buf += " "; } else buf += dec(x); });
+      put(buf);
+    }
+    else if(op==="BI"){ var ei = s.indexOf("EI", p); p = ei < 0 ? s.length : ei + 2; }   // картинка прямо в потоке
+    ops = [];
+  }
+  return items;
+}
+// куски текста → строки: одна высота — одна строка, ячейки через табуляцию
+function pdfLinesOf(items){
+  var out = [], cur = null;
+  items.sort(function(a,b){ return b.y - a.y; }).forEach(function(it){
+    if(!cur || Math.abs(cur.y - it.y) > 2){ cur = { y:it.y, cells:[] }; out.push(cur); }
+    cur.cells.push(it);
+  });
+  return out.map(function(l){
+    var parts = [];
+    l.cells.sort(function(a,b){ return a.x - b.x; }).forEach(function(c){
+      String(c.t).split(/\s{2,}/).forEach(function(t){ t = t.replace(/\s+/g," ").trim(); if(t) parts.push(t); });
+    });
+    return parts.join("\t");
+  }).filter(Boolean);
+}
+// PDF (ArrayBuffer) → Promise строк текста, страница за страницей
+function pdfTextLines(buffer){
+  var src = pdfBin(new Uint8Array(buffer));
+  if(src.slice(0, 1024).indexOf("%PDF") < 0) return Promise.reject(new Error("not a pdf"));
+  var objs = pdfObjects(src), lines = [];
+  return pdfUnpack(objs).then(function(){
+    return pdfPages(objs).reduce(function(chain, pg){
+      return chain.then(function(){
+        var cs = pg.node.Contents, nums = [];
+        if(cs && cs.r !== undefined && objs[cs.r] && objs[cs.r].at >= 0) nums = [cs.r];
+        else {
+          var arr = pdfGet(objs, cs);
+          if(Array.isArray(arr)) nums = arr.filter(function(x){ return x && x.r !== undefined; }).map(function(x){ return x.r; });
+        }
+        return Promise.all([pdfFonts(objs, pg.res), Promise.all(nums.map(function(k){ return pdfStream(objs, k); }))])
+          .then(function(r){ pdfLinesOf(pdfPageItems(r[1].join("\n"), r[0])).forEach(function(l){ lines.push(l); }); });
+      });
+    }, Promise.resolve());
+  }).then(function(){ return lines; });
+}
+
+/* ---- выписка Kaspi: строки текста → операции ----
+   Строка операции: «25.09.26 ⇥ - 1 660,00 ₸ ⇥ Покупка ⇥ YANDEX.GO». Названия операций
+   не проверяем (у выписки на казахском и английском они другие) — хватает даты и суммы.
+   Каждая операция получает ref — ключ «карта|дата|сумма|кто|№ по счёту среди одинаковых»:
+   по нему повторная загрузка той же или пересекающейся выписки ничего не задвоит. */
+function kaspiDate(s){
+  var m = /^(\d{2})\.(\d{2})\.(\d{2}|\d{4})$/.exec(s);
+  return m ? ((m[3].length===2 ? "20"+m[3] : m[3]) + "-" + m[2] + "-" + m[1]) : "";
+}
+function kaspiNum(s){ return parseFloat(String(s).replace(/[\s ]/g, "").replace(",", ".")) || 0; }
+function kaspiParse(lines){
+  var text = lines.join("\n"), flat = text.replace(/\t/g, " ");
+  if(!/kaspi/i.test(text)) return null;
+  var card = (/карты:?\s*\*?(\d{4})\b/i.exec(flat) || /\*(\d{4})\b/.exec(flat) || [])[1] || "";
+  var kind = (/(Kaspi\s+(?:Gold|Red|Kredit|Pay|Депозит))/i.exec(flat) || [])[1] || "Kaspi";
+  var ops = [], seen = {};
+  lines.forEach(function(l){
+    var m = /^(\d{2}\.\d{2}\.\d{2,4})\s+([+-])\s?(\d[\d  ]*[.,]\d{2})\s*₸?\s*(.*)$/.exec(l);
+    if(!m) return;
+    var rest = m[4].split("\t").map(function(x){ return x.trim(); }).filter(Boolean);
+    var o = { date: kaspiDate(m[1]), sign: m[2]==="-" ? -1 : 1, amount: kaspiNum(m[3]),
+              op: rest.length > 1 ? rest[0] : "", name: rest.length > 1 ? rest.slice(1).join(" ") : (rest[0] || "") };
+    if(!o.date || !o.amount) return;
+    var k = ["kaspi", card, o.date, (o.sign<0 ? "-" : "+") + o.amount.toFixed(2), catKey(o.name)].join("|");
+    seen[k] = (seen[k] || 0) + 1;
+    o.ref = k + "|" + seen[k];
+    ops.push(o);
+  });
+  // «Доступно на 19.09.26 + 142 087,67 ₸» — остаток на начало и на конец: по ним проверяем,
+  // что прочитаны все строки, а не часть
+  var bal = [], re = /Доступно на (\d{2}\.\d{2}\.\d{2,4}):?\s*([+-])?\s?(\d[\d  ]*[.,]\d{2})/g, b;
+  while((b = re.exec(flat))) bal.push({ date: kaspiDate(b[1]), v: (b[2]==="-" ? -1 : 1) * kaspiNum(b[3]) });
+  bal.sort(function(a, c){ return a.date < c.date ? -1 : (a.date > c.date ? 1 : 0); });
+  var period = /период с (\d{2}\.\d{2}\.\d{2,4}) по (\d{2}\.\d{2}\.\d{2,4})/.exec(flat);
+  var dates = ops.map(function(o){ return o.date; }).sort();
+  var st = { ops:ops, card:card, kind:kind,
+             from: period ? kaspiDate(period[1]) : (dates[0] || ""),
+             to: period ? kaspiDate(period[2]) : (dates[dates.length-1] || ""),
+             diff: null };
+  if(bal.length >= 2 && bal[0].date < bal[bal.length-1].date){
+    var sum = ops.reduce(function(s, o){ return s + o.sign * o.amount; }, 0);
+    st.diff = Math.round((bal[bal.length-1].v - bal[0].v - sum) * 100) / 100;
+  }
+  return st;
+}
+
+/* ---- что с какой операцией делать по умолчанию ----
+   По знаку: минус — расход, плюс — доход. Сразу «пропустить»: покупку, за которой пришёл
+   возврат той же суммы; то, что уже записано вручную или отмечено оплаченным платежом (та же
+   сумма, ±1 день); наличные через банкомат и переводы между своими счетами. Магазин или
+   человек из прошлой выписки получает тип и статью, как в прошлый раз (поле bankName записи).
+   Уже загруженные операции (bankRef) не показываются вовсе, пропущенные в прошлый раз
+   (uiSettings/kaspiSkipped) — только по кнопке. */
+var KASPI_SKIP_DOC = "kaspiSkipped";
+var KASPI_SKIP_MAX = 3000;
+var KX_CHOICES = [["expense","Расход"],["income","Доход"],["debt","Долг"],["skip","Пропустить"]];
+function kaspiSkippedRefs(){
+  var d = state.uiSettings.find(function(x){ return x.id===KASPI_SKIP_DOC; });
+  return (d && Array.isArray(d.refs)) ? d.refs : [];
+}
+function daysApart(a, b){ return Math.round(Math.abs(new Date(a+"T00:00:00") - new Date(b+"T00:00:00")) / 86400000); }
+// статью угадываем только у покупок: у перевода в «деталях» имя человека, и словарь
+// подсказок ловит в нём случайные корни («Сапаркуль» → «парк» → Развлечения)
+function kxGuessCat(r, kind){
+  if(/перевод|пополнени/i.test(r.op)) return "";
+  return guessCategory(r.name + " " + r.op, kind);
+}
+function kaspiPrepare(st){
+  var loaded = {}, skipped = {};
+  state.entries.concat(queueMine()).forEach(function(e){ if(e.bankRef) loaded[e.bankRef] = true; });
+  kaspiSkippedRefs().forEach(function(r){ skipped[r] = true; });
+  var rows = st.ops.filter(function(o){ return !loaded[o.ref]; }).map(function(o){
+    return Object.assign({}, o, { before: !!skipped[o.ref], choice:"", why:"", category:"", person:"", newCat:false, catSet:false });
+  });
+  var loadedCount = st.ops.length - rows.length;
+  var fresh = rows.filter(function(r){ return !r.before; });
+  rows.forEach(function(r){ if(r.before){ r.choice = "skip"; r.why = "пропущено в прошлый раз"; } });
+
+  // покупка и возврат той же суммы там же — деньги вернулись, ни расхода, ни дохода
+  fresh.forEach(function(r){
+    if(r.sign > 0 || r.choice) return;
+    var back = fresh.find(function(x){
+      return x.sign > 0 && !x.choice && x.amount===r.amount && catKey(x.name)===catKey(r.name) && daysApart(x.date, r.date) <= 7;
+    });
+    if(back){ r.choice = back.choice = "skip"; r.why = back.why = "покупка и возврат — деньги вернулись"; }
+  });
+
+  // уже записано руками или голосом, отмечено оплаченным платежом — одна запись на одну операцию
+  var lo = addDays(st.from || todayStr(), -1), hi = addDays(st.to || todayStr(), 1), cands = [];
+  state.entries.forEach(function(e){
+    if(e.bankRef || !e.date || e.date < lo || e.date > hi) return;
+    cands.push({ date:e.date, amount:Number(e.amount)||0, sign:(e.type==="income" || e.type==="owe") ? 1 : -1,
+                 why:"уже записано: " + (e.category || e.person || e.note || "запись") });
+  });
+  monthsInRange(lo, hi).forEach(function(p){
+    paidRecurringIn(p).forEach(function(x){
+      cands.push({ date:x.date, amount:x.amount, sign: x.rec.kind==="income" ? 1 : -1, why:"уже отмечено: " + x.rec.name });
+    });
+  });
+  fresh.forEach(function(r){
+    if(r.choice) return;
+    var best = null;
+    cands.forEach(function(c){
+      if(c.used || c.sign!==r.sign || Math.abs(c.amount - r.amount) >= 0.5) return;
+      var d = daysApart(c.date, r.date);
+      if(d <= 1 && (!best || d < best.d)) best = { c:c, d:d };
+    });
+    if(best){ best.c.used = true; r.choice = "skip"; r.why = best.c.why; }
+  });
+
+  // свои деньги: наличные через банкомат и переводы между своими картами и счетами
+  fresh.forEach(function(r){
+    if(r.choice) return;
+    var t = (r.op + " " + r.name).toLowerCase();
+    if(/комисси/.test(t)) return;                              // комиссия — настоящий расход
+    if(/банкомат|снятие|снятия/.test(t)){ r.choice = "skip"; r.why = "наличные — деньги остались ваши"; }
+    else if(/на карту|с карты|депозит|сво(й|и|их) сч|между сво/.test(t)){ r.choice = "skip"; r.why = "похоже, перевод на свой счёт"; }
+  });
+
+  // тот же магазин или человек уже был в прошлой выписке — как тогда
+  var learned = {};
+  state.entries.forEach(function(e){
+    if(!e.bankName) return;
+    var k = catKey(e.bankName) + "|" + ((e.type==="income" || e.type==="owe") ? 1 : -1);
+    if(!learned[k] || String(e.date) > String(learned[k].date)) learned[k] = e;
+  });
+  fresh.forEach(function(r){
+    if(r.choice) return;
+    var e = learned[catKey(r.name) + "|" + r.sign];
+    if(e){
+      r.choice = (e.type==="lend" || e.type==="owe") ? "debt" : e.type;
+      r.category = e.category || "";
+      r.person = e.person || "";
+      r.why = "как в прошлый раз";
+      return;
+    }
+    r.choice = r.sign < 0 ? "expense" : "income";
+    if(r.sign > 0 && /покупк/i.test(r.op)) r.why = "возврат покупки";
+  });
+  rows.forEach(function(r){ kxFill(r); });
+  return { rows:rows, loadedCount:loadedCount };
+}
+// у выбранного типа должна быть подходящая статья или имя
+function kxFill(r){
+  if(r.choice==="expense" || r.choice==="income"){
+    if(!r.newCat && !findCategory(r.category, r.choice)) r.category = kxGuessCat(r, r.choice);
+  } else if(r.choice==="debt" && !r.person){
+    r.person = r.name;
+  }
+}
+function kxDayLabel(d){ return d ? shortDate(d) : ""; }
+function kxPeriodLabel(st){
+  if(!st.from) return "";
+  return st.from===st.to ? shortDate(st.from) : (shortDate(st.from) + " — " + dateLabel(st.to));
+}
+function kxRowHtml(r, i){
+  var field = "";
+  if(r.choice==="expense" || r.choice==="income"){
+    field = r.newCat
+      ? '<input type="text" data-kx-catnew="'+i+'" placeholder="'+(r.choice==="income" ? "Новая статья дохода" : "Новая статья расхода")+'" value="'+escapeHtml(r.category)+'">'+
+        '<button class="icon-btn" data-kx-catback="'+i+'" title="Выбрать из списка">↩</button>'
+      : '<select data-kx-cat="'+i+'">'+catOptionsHtml(r.choice, r.category, "— статья —")+'</select>';
+  } else if(r.choice==="debt"){
+    field = '<input type="text" data-kx-person="'+i+'" placeholder="Имя" value="'+escapeHtml(r.person)+'">';
+  }
+  var sub = escapeHtml(r.op || "Операция");
+  if(r.choice==="debt") sub += " · " + (r.sign < 0 ? "мне должны" : "я должен");
+  if(r.why) sub += ' · <span class="kx-why">'+escapeHtml(r.why)+'</span>';
+  return '<div class="kx-top"><span class="kx-name">'+escapeHtml(r.name || r.op)+'</span>'+
+      '<span class="kx-amt '+(r.sign<0 ? "neg" : "pos")+'">'+(r.sign<0 ? "-" : "+")+fmtMoney(r.amount)+'</span></div>'+
+    '<div class="kx-sub">'+sub+'</div>'+
+    '<div class="kx-ctl"><div class="seg">'+KX_CHOICES.map(function(c){
+        return '<button type="button" class="seg-opt'+(r.choice===c[0] ? " active" : "")+'" data-kx-choice="'+i+'" data-v="'+c[0]+'">'+c[1]+'</button>';
+      }).join("")+'</div>'+
+      (field ? '<div class="kx-field">'+field+'</div>' : '')+
+    '</div>';
+}
+var KX_OTHER = { expense:"Прочее", income:"Прочий доход" };
+function openKaspiModal(st){
+  var prep = kaspiPrepare(st), rows = prep.rows;
+  var shown = rows.filter(function(r){ return !r.before; }), hiddenCount = rows.length - shown.length;
+  if(!rows.length){ toast("Новых операций нет — всё из этой выписки уже загружено"); return; }
+  var n = st.ops.length;
+  var intro = escapeHtml((st.card ? "*" + st.card + " · " : "") + kxPeriodLabel(st)) + " · " +
+    n + " " + pluralize(n, "операция", "операции", "операций") +
+    (st.diff!==null && Math.abs(st.diff) < 1 ? ", сумма сходится с остатком банка" : "") + ". " +
+    (prep.loadedCount ? "Уже загружено раньше: " + prep.loadedCount + ". " : "") +
+    (shown.length
+      ? "Минус — расход, плюс — доход; свои переводы, наличные, возвраты и уже записанное помечены «Пропустить»."
+      : "Новых операций нет.");
+  var check = (st.diff===null || Math.abs(st.diff) < 1) ? ""
+    : '<div class="note-box over-budget">Сумма операций не сходится с остатком банка на <b>'+fmtMoney(Math.abs(st.diff))+'</b> — часть строк могла не прочитаться.</div>';
+  var html =
+    '<div class="modal-head"><span class="modal-title">Выписка '+escapeHtml(st.kind)+'</span>'+
+      '<button class="icon-btn" id="kxClose" title="Закрыть">✕</button></div>'+
+    '<div class="note-box">'+intro+'</div>'+ check +
+    '<div id="kxRows"></div>'+
+    (hiddenCount ? '<button class="btn btn-ghost btn-sm kx-more" id="kxMore">Показать пропущенные в прошлый раз ('+hiddenCount+')</button>' : '')+
+    '<div class="kx-foot">'+
+      '<div class="kx-total" id="kxTotal"></div>'+
+      '<div class="modal-actions">'+
+        '<button class="btn btn-ghost" id="kxCancel">Отмена</button>'+
+        '<button class="btn btn-primary" id="kxSave">Записать</button>'+
+      '</div>'+
+    '</div>';
+  openModal(html, function(veil){
+    var box = veil.querySelector("#kxRows");
+    function draw(){
+      var day = "", out = [];
+      shown.forEach(function(r){
+        var i = rows.indexOf(r);
+        if(r.date !== day){ day = r.date; out.push('<div class="kx-day">'+escapeHtml(kxDayLabel(day))+'</div>'); }
+        out.push('<div class="kx-row'+(r.choice==="skip" ? " skip" : "")+'" data-kx-row="'+i+'">'+kxRowHtml(r, i)+'</div>');
+      });
+      box.innerHTML = out.join("");
+      total();
+    }
+    function redrawRow(i){
+      var el = box.querySelector('[data-kx-row="'+i+'"]');
+      if(!el) return;
+      el.className = "kx-row" + (rows[i].choice==="skip" ? " skip" : "");
+      el.innerHTML = kxRowHtml(rows[i], i);
+    }
+    function total(){
+      var n = { expense:0, income:0, debt:0, skip:0 }, sum = { expense:0, income:0, debt:0 }, bare = { expense:0, income:0 };
+      shown.forEach(function(r){
+        n[r.choice]++;
+        if(r.choice==="skip") return;
+        sum[r.choice] += r.amount;
+        if(bare[r.choice] !== undefined && !String(r.category||"").trim()) bare[r.choice]++;
+      });
+      var parts = [];
+      if(n.expense) parts.push("расход " + n.expense + " на <b>" + fmtMoney(sum.expense) + "</b>");
+      if(n.income) parts.push("доход " + n.income + " на <b>" + fmtMoney(sum.income) + "</b>");
+      if(n.debt) parts.push("долг " + n.debt + " на <b>" + fmtMoney(sum.debt) + "</b>");
+      var keep = n.expense + n.income + n.debt;
+      var txt = (keep ? "Запишу: " + parts.join(" · ") + "." : "Записывать нечего.") + (n.skip ? " Пропущу " + n.skip + "." : "");
+      ["expense","income"].forEach(function(k){
+        if(bare[k]) txt += " Без статьи " + bare[k] + " — запишу в «" + KX_OTHER[k] + "».";
+      });
+      veil.querySelector("#kxTotal").innerHTML = txt;
+      veil.querySelector("#kxSave").textContent = keep ? "Записать " + keep : "Готово";
+    }
+    // статья выбрана у одной строки — тот же магазин в других строках, где её не трогали, получает её же
+    function spread(i){
+      var r = rows[i];
+      shown.forEach(function(x){
+        var j = rows.indexOf(x);
+        if(j===i || x.catSet || x.choice!==r.choice || x.sign!==r.sign || catKey(x.name)!==catKey(r.name)) return;
+        x.category = r.category;
+        x.newCat = r.newCat;
+        redrawRow(j);
+      });
+    }
+    box.addEventListener("click", function(e){
+      var b = e.target.closest("[data-kx-choice]");
+      if(b){
+        var i = parseInt(b.getAttribute("data-kx-choice"), 10), r = rows[i], v = b.getAttribute("data-v");
+        if(r.choice===v) return;
+        r.choice = v;
+        kxFill(r);
+        redrawRow(i);
+        total();
+        return;
+      }
+      var back = e.target.closest("[data-kx-catback]");
+      if(back){
+        var k = parseInt(back.getAttribute("data-kx-catback"), 10), rk = rows[k];
+        rk.newCat = false;
+        var known = findCategory(rk.category, rk.choice);
+        rk.category = known ? known.name : kxGuessCat(rk, rk.choice);
+        redrawRow(k);
+        total();
+      }
+    });
+    box.addEventListener("change", function(e){
+      var sel = e.target.closest("[data-kx-cat]");
+      if(sel){
+        var i = parseInt(sel.getAttribute("data-kx-cat"), 10), r = rows[i];
+        if(sel.value===NEW_CAT_VALUE){
+          r.newCat = true;
+          r.category = "";
+          redrawRow(i);
+          var inp = box.querySelector('[data-kx-catnew="'+i+'"]');
+          if(inp) inp.focus();
+          total();
+          return;
+        }
+        r.category = sel.value;
+        r.catSet = true;
+        spread(i);
+        total();
+        return;
+      }
+      var nc = e.target.closest("[data-kx-catnew]");
+      if(nc){
+        var j = parseInt(nc.getAttribute("data-kx-catnew"), 10);
+        rows[j].category = nc.value.trim();
+        rows[j].catSet = true;
+        spread(j);
+        total();
+      }
+    });
+    box.addEventListener("input", function(e){
+      var t = e.target;
+      if(t.hasAttribute("data-kx-person")) rows[parseInt(t.getAttribute("data-kx-person"), 10)].person = t.value;
+      else if(t.hasAttribute("data-kx-catnew")){ rows[parseInt(t.getAttribute("data-kx-catnew"), 10)].category = t.value; total(); }
+    });
+    var more = veil.querySelector("#kxMore");
+    if(more) more.addEventListener("click", function(){
+      shown = rows.slice();
+      more.remove();
+      draw();
+    });
+    veil.querySelector("#kxClose").addEventListener("click", function(){ closeModal(veil); });
+    veil.querySelector("#kxCancel").addEventListener("click", function(){ closeModal(veil); });
+    veil.querySelector("#kxSave").addEventListener("click", function(){
+      closeModal(veil);
+      kaspiSave(shown);
+    });
+    draw();
+  });
+}
+// Сохранить разметку: отмеченное — записями через saveParsedItems (там же заводятся новые
+// статьи и очередь без сети), пропущенное — в список uiSettings/kaspiSkipped.
+function kaspiSave(list){
+  var items = [], skip = {}, keep = {};
+  list.forEach(function(r){
+    if(r.choice==="skip"){ skip[r.ref] = true; return; }
+    keep[r.ref] = true;
+    var type = r.choice==="debt" ? (r.sign < 0 ? "lend" : "owe") : r.choice;
+    var it = { type:type, amount:r.amount, date:r.date, bankRef:r.ref, bankName:r.name,
+               note: (!r.op || /покупк/i.test(r.op)) ? r.name : (r.op + " · " + r.name) };
+    if(type==="lend" || type==="owe") it.person = String(r.person||"").trim() || r.name;
+    else it.category = String(r.category||"").trim() || KX_OTHER[type];
+    items.push(it);
+  });
+  var prev = kaspiSkippedRefs();
+  var next = prev.filter(function(x){ return !skip[x] && !keep[x]; }).concat(Object.keys(skip)).slice(-KASPI_SKIP_MAX);
+  function putSkips(refs){
+    if(db) db.collection("uiSettings").doc(KASPI_SKIP_DOC).set({ refs:refs, updatedAt:new Date().toISOString() }).catch(function(){});
+  }
+  if(next.join("\n") !== prev.join("\n")) putSkips(next);
+  var skipped = Object.keys(skip).length;
+  if(!items.length){
+    toast(skipped ? "Отмечено: пропустить " + skipped : "Записывать нечего");
+    return;
+  }
+  saveParsedItems(items, function(results, queuedCount){
+    var msg = "Записано " + results.length + " " + pluralize(results.length, "операция", "операции", "операций");
+    if(skipped) msg += " · пропущено " + skipped;
+    if(queuedCount) msg += " · " + queuedCount + " в очереди, нет связи";
+    toast(msg, function(){
+      results.forEach(function(r){ undoAdd(r, true); });
+      putSkips(prev);
+      toast("Отменено");
+    });
+  });
+}
+document.getElementById("kaspiBtn").addEventListener("click", function(){ document.getElementById("kaspiFile").click(); });
+document.getElementById("kaspiFile").addEventListener("change", function(){
+  var input = this, file = input.files && input.files[0];
+  if(!file) return;
+  var btn = document.getElementById("kaspiBtn"), label = btn.textContent;
+  function done(){ btn.disabled = false; btn.textContent = label; input.value = ""; }   // тот же файл можно выбрать снова
+  if(typeof DecompressionStream==="undefined" || !file.arrayBuffer){
+    done();
+    toast("Этот браузер не умеет читать PDF — обновите его");
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "Читаю…";
+  file.arrayBuffer().then(pdfTextLines).then(function(lines){
+    done();
+    var st = kaspiParse(lines);
+    if(!st || !st.ops.length){ toast("Операций не нашёл — нужна выписка Kaspi в PDF"); return; }
+    openKaspiModal(st);
+  }).catch(function(){
+    done();
+    toast("Не удалось прочитать файл — нужна выписка Kaspi в PDF");
   });
 });
 
